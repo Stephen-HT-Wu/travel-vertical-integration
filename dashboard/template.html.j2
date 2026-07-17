@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>旅遊行程 Dashboard — {{ trip_log.persona.home_location }}</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --surface-2: #f1f1ef;
+    --border: #e3e2de;
+    --text: #1c1c1a;
+    --text-muted: #6b6b64;
+    --accent: #b45309;
+    --accent-2: #0f6b5c;
+    --real: #0f6b5c;
+    --real-bg: #e6f3ef;
+    --sim: #8a6d1a;
+    --sim-bg: #faf0da;
+    --high: #0f6b5c;
+    --mid: #b45309;
+    --low: #a3402f;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 1px 8px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a;
+      --surface: #202226;
+      --surface-2: #26282c;
+      --border: #34363a;
+      --text: #ececea;
+      --text-muted: #a2a29c;
+      --accent: #e0a24a;
+      --accent-2: #4fbfa8;
+      --real: #4fbfa8;
+      --real-bg: #17332c;
+      --sim: #e0c168;
+      --sim-bg: #362f18;
+      --high: #4fbfa8;
+      --mid: #e0a24a;
+      --low: #e08a7a;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 1px 12px rgba(0,0,0,.25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17181a; --surface: #202226; --surface-2: #26282c; --border: #34363a;
+    --text: #ececea; --text-muted: #a2a29c; --accent: #e0a24a; --accent-2: #4fbfa8;
+    --real: #4fbfa8; --real-bg: #17332c; --sim: #e0c168; --sim-bg: #362f18;
+    --high: #4fbfa8; --mid: #e0a24a; --low: #e08a7a;
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f7f5; --surface: #ffffff; --surface-2: #f1f1ef; --border: #e3e2de;
+    --text: #1c1c1a; --text-muted: #6b6b64; --accent: #b45309; --accent-2: #0f6b5c;
+    --real: #0f6b5c; --real-bg: #e6f3ef; --sim: #8a6d1a; --sim-bg: #faf0da;
+    --high: #0f6b5c; --mid: #b45309; --low: #a3402f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 1.25rem 4rem;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Helvetica Neue", "PingFang TC", "Noto Sans TC", sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  header.page-header { padding: 2.5rem 0 1.5rem; }
+  header.page-header h1 { font-size: 1.6rem; margin: 0 0 .35rem; }
+  header.page-header .meta { color: var(--text-muted); font-size: .9rem; }
+  section { margin: 1.75rem 0; }
+  h2 { font-size: 1.05rem; margin: 0 0 .75rem; display: flex; align-items: center; gap: .5rem; }
+  h2 .icon { font-size: 1.1rem; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 1rem 1.1rem; box-shadow: var(--shadow); margin-bottom: .75rem;
+  }
+  .badge {
+    display: inline-block; font-size: .72rem; padding: .15rem .55rem; border-radius: 999px;
+    font-weight: 600; letter-spacing: .01em; white-space: nowrap;
+  }
+  .badge-real { background: var(--real-bg); color: var(--real); }
+  .badge-sim { background: var(--sim-bg); color: var(--sim); }
+  .badge-layer { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+  .maturity-高 { color: var(--high); }
+  .maturity-中 { color: var(--mid); }
+  .maturity-低 { color: var(--low); }
+  .persona-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: .75rem; }
+  .persona-grid .item .label { font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .persona-grid .item .value { font-size: 1.05rem; margin-top: .15rem; }
+  .legend-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  .legend-table th, .legend-table td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--border); }
+  .legend-table th { color: var(--text-muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; }
+  .legend-table tr.not-covered td { color: var(--text-muted); font-style: italic; }
+  .insp-grid, .cand-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: .75rem; }
+  .insp-card a { color: var(--accent-2); text-decoration: none; font-size: .82rem; word-break: break-word; }
+  .insp-card a:hover { text-decoration: underline; }
+  .cand-card { position: relative; }
+  .cand-card.is-selected { border-color: var(--accent-2); }
+  .cand-card .selected-tag {
+    position: absolute; top: -.55rem; right: .75rem; background: var(--accent-2); color: #fff;
+    font-size: .7rem; padding: .1rem .5rem; border-radius: 999px; font-weight: 600;
+  }
+  .cand-card .price { color: var(--text-muted); font-size: .85rem; }
+  .cand-card .highlights { margin: .4rem 0 0; padding-left: 1.1rem; font-size: .85rem; color: var(--text-muted); }
+  .stage-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .4rem; }
+  .stage-note { font-size: .78rem; color: var(--text-muted); }
+  .confirm-line { margin-top: .6rem; padding: .5rem .65rem; border-radius: 8px; background: var(--surface-2); font-size: .85rem; }
+  .confirm-line .who { font-weight: 600; }
+  .day-block { display: flex; gap: .75rem; padding: .55rem 0; border-bottom: 1px dashed var(--border); }
+  .day-block:last-child { border-bottom: none; }
+  .day-block .time { flex: 0 0 96px; color: var(--text-muted); font-variant-numeric: tabular-nums; font-size: .85rem; }
+  .day-block .theme { font-weight: 600; }
+  .day-block .loc { color: var(--text-muted); font-size: .85rem; }
+  .day-title { font-weight: 700; margin: 1rem 0 .25rem; }
+  .day-title:first-child { margin-top: 0; }
+  .disruption-diff { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+  @media (max-width: 640px) { .disruption-diff { grid-template-columns: 1fr; } }
+  .disruption-diff .col-title { font-size: .78rem; color: var(--text-muted); margin-bottom: .35rem; text-transform: uppercase; letter-spacing: .03em; }
+  .notification-box { background: var(--surface-2); border-left: 3px solid var(--accent); padding: .6rem .8rem; border-radius: 6px; font-size: .9rem; margin-top: .75rem; }
+  .review-card .stars { color: var(--accent); font-size: 1.3rem; letter-spacing: .1em; }
+  .review-card .cat-ratings { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+  .review-card .cat-ratings span { background: var(--surface-2); border-radius: 999px; padding: .2rem .65rem; font-size: .78rem; }
+  .share-box { margin-top: .8rem; padding: .8rem 1rem; border-radius: 8px; background: var(--real-bg); color: var(--real); font-size: .92rem; }
+  .share-box .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; opacity: .8; margin-bottom: .3rem; }
+  footer.disclaimer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-muted); font-size: .8rem; }
+  .tips-list { margin: .3rem 0; padding-left: 1.1rem; font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="page-header">
+    <h1>{{ trip_log.persona.home_location }} 出發 — 旅遊行程 Dashboard</h1>
+    <div class="meta">產生時間：{{ trip_log.created_at }} · 模型：{{ trip_log.run_config.model }} · 搜尋模式：{{ trip_log.run_config.site_mode }}</div>
+  </header>
+
+  <section class="persona-card">
+    <h2>👤 人物設定</h2>
+    <div class="card persona-grid">
+      <div class="item"><div class="label">年齡層</div><div class="value">{{ trip_log.persona.age_group }}</div></div>
+      <div class="item"><div class="label">性別</div><div class="value">{{ trip_log.persona.gender }}</div></div>
+      <div class="item"><div class="label">出發地</div><div class="value">{{ trip_log.persona.home_location }}</div></div>
+      <div class="item"><div class="label">行程長度</div><div class="value">{{ trip_log.persona.trip_length_type }}{% if trip_log.persona.trip_length_type == "multi_day" %}（{{ trip_log.persona.days }} 天）{% endif %}</div></div>
+      <div class="item"><div class="label">同行人數</div><div class="value">{{ trip_log.persona.party_size }} 人</div></div>
+    </div>
+  </section>
+
+  <section class="maturity-legend">
+    <h2>🗺️ 成熟度圖例（對照七層旅遊 Agent 框架）</h2>
+    <div class="card">
+      <table class="legend-table">
+        <thead><tr><th>Layer</th><th>名稱</th><th>本 Demo 對應階段</th><th>成熟度</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>旅遊靈感與目的地探索</td><td>靈感</td><td class="maturity-高">高</td></tr>
+          <tr><td>2</td><td>個人化行程規劃與動態排程</td><td>行程規劃、動態重排</td><td class="maturity-高">高（草稿）／中（重排）</td></tr>
+          <tr><td>3</td><td>搜尋、比價與交易 Agent</td><td>交通、住宿、活動</td><td class="maturity-低">低（僅候選提案）</td></tr>
+          <tr><td>4</td><td>旅途中即時助理與數位禮賓</td><td>行中導覽</td><td class="maturity-中">中</td></tr>
+          <tr><td>5</td><td>異常處理與自動改訂</td><td>動態重排橋段</td><td class="maturity-中">中（分析與提案）／低（跨平台自動改訂）</td></tr>
+          <tr class="not-covered"><td>6</td><td>飯店/航空/旅行社內部營運 Agent</td><td colspan="2">本 demo 為消費端視角，未展示 B2B 供給端能力</td></tr>
+          <tr><td>7</td><td>目的地管理與觀光供給整合</td><td>餐飲、景點、購物</td><td class="maturity-中">中／中高</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if trip_log.stages.inspiration %}
+  <section class="inspiration">
+    <h2><span class="icon">💡</span> 靈感探索 <span class="badge badge-real">真實資料</span> <span class="badge badge-layer">Layer 1 · 高成熟度</span></h2>
+    <div class="insp-grid">
+      {% for opt in trip_log.stages.inspiration.destination_options %}
+      <div class="card insp-card">
+        <strong>{{ opt.name }}</strong>
+        <p style="font-size:.88rem; margin:.4rem 0;">{{ opt.summary }}</p>
+        <p style="font-size:.82rem; color:var(--text-muted); margin:.3rem 0;">為什麼推薦：{{ opt.why_recommended }}</p>
+        <a href="{{ opt.source_url }}" target="_blank" rel="noopener">🔗 {{ opt.source_title }}</a>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if trip_log.stages.itinerary %}
+  <section class="itinerary">
+    <h2><span class="icon">🗓️</span> 已確認行程 <span class="badge badge-layer">Layer 2 · 高成熟度（草稿）</span></h2>
+    <div class="card">
+      {% for day in trip_log.stages.itinerary.days %}
+      <div class="day-title">第 {{ day.day_number }} 天</div>
+      {% for block in day.blocks %}
+      <div class="day-block">
+        <div class="time">{{ block.time_block }}</div>
+        <div>
+          <div class="theme">{{ block.theme }}</div>
+          <div class="loc">{{ block.location_hint }}{% if block.notes %} · {{ block.notes }}{% endif %}</div>
+        </div>
+      </div>
+      {% endfor %}
+      {% endfor %}
+      {% if trip_log.stages.itinerary.confirmation %}
+      <div class="confirm-line">
+        <span class="who">虛擬使用者：</span>
+        {{ "✅ 已確認" if trip_log.stages.itinerary.confirmation.status == "confirmed" else "✏️ 已要求修改後確認" }}
+        — {{ trip_log.stages.itinerary.confirmation.feedback }}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% for key, label, stage in candidate_stages %}
+  {% if stage %}
+  <section class="candidate-stage">
+    <div class="stage-header">
+      <h2><span class="icon">{{ {"transportation":"🚄","accommodation":"🏨","dining":"🍜","attractions":"🎡","activities":"🎫","shopping":"🛍️"}[key] }}</span> {{ label }}
+        {% set any_real = stage.candidates | selectattr("data_source","equalto","real_search") | list | length > 0 %}
+        <span class="badge {{ 'badge-real' if any_real else 'badge-sim' }}">{{ '真實資料' if any_real else '模擬資料' }}</span>
+        <span class="badge badge-layer">Layer {{ stage_metadata[key].layer }} · {{ stage_metadata[key].maturity }}</span>
+      </h2>
+    </div>
+    <div class="stage-note">{{ stage_metadata[key].note }}</div>
+    <div class="cand-grid" style="margin-top:.6rem;">
+      {% for c in stage.candidates %}
+      {% set final_id = stage.confirmation.final_candidate_id if stage.confirmation else stage.agent_selected_candidate_id %}
+      <div class="card cand-card {{ 'is-selected' if c.id == final_id else '' }}">
+        {% if c.id == final_id %}<div class="selected-tag">✓ 已選定</div>{% endif %}
+        <div style="display:flex; justify-content:space-between; align-items:start; gap:.5rem;">
+          <strong>{{ c.name }}</strong>
+          <span class="badge {{ 'badge-real' if c.data_source == 'real_search' else 'badge-sim' }}">{{ '真實資料' if c.data_source == 'real_search' else '模擬資料' }}</span>
+        </div>
+        <div class="price">{{ c.vendor }} · {{ c.price_range }} · ⭐ {{ c.rating }}</div>
+        <p style="font-size:.85rem; margin:.4rem 0 0;">{{ c.description }}</p>
+        {% if c.highlights %}
+        <ul class="highlights">{% for h in c.highlights %}<li>{{ h }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if c.source_url %}<a href="{{ c.source_url }}" target="_blank" rel="noopener" style="font-size:.8rem; color:var(--accent-2);">🔗 {{ c.source_title }}</a>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <div class="card" style="margin-top:.6rem;">
+      <div style="font-size:.85rem;"><strong>Agent 推薦理由：</strong>{{ stage.agent_selection_rationale }}</div>
+      {% if stage.confirmation %}
+      <div class="confirm-line">
+        <span class="who">虛擬使用者：</span>
+        {% if stage.confirmation.status == "confirmed" %}✅ 確認 agent 的推薦
+        {% elif stage.confirmation.status == "swapped" %}🔁 更換為其他候選方案
+        {% else %}❌ 婉拒{% endif %}
+        — {{ stage.confirmation.feedback }}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+  {% endfor %}
+
+  {% if trip_log.stages.in_trip_guide %}
+  <section class="guide">
+    <h2><span class="icon">🧭</span> 行中導覽 <span class="badge badge-layer">Layer 4 · 中成熟度</span></h2>
+    {% for sec in trip_log.stages.in_trip_guide.guide_sections %}
+    <div class="card">
+      <div class="day-title" style="margin-top:0;">第 {{ sec.day_number }} 天</div>
+      <ul class="tips-list">{% for t in sec.tips %}<li>{{ t }}</li>{% endfor %}</ul>
+      <div style="font-size:.82rem; color:var(--text-muted); margin-top:.4rem;">🆘 {{ sec.emergency_info }}</div>
+      {% if sec.local_phrases %}
+      <div style="font-size:.82rem; color:var(--text-muted); margin-top:.3rem;">🗣️ {{ sec.local_phrases | join(' · ') }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if trip_log.replanning %}
+  <section class="replanning">
+    <h2><span class="icon">⚡</span> 突發狀況與動態重新排程 <span class="badge badge-layer">Layer 5 · 中成熟度（分析與提案）</span></h2>
+    <div class="card">
+      <div style="font-size:.9rem;"><strong>模擬情境</strong>（{{ trip_log.disruption_event.disruption_type }}，第 {{ trip_log.disruption_event.day_number }} 天 {{ trip_log.disruption_event.affected_time_block }}）：{{ trip_log.disruption_event.description }}</div>
+      <div class="disruption-diff" style="margin-top:.8rem;">
+        <div>
+          <div class="col-title">調整後行程（第 {{ trip_log.replanning.revised_day.day_number }} 天）</div>
+          {% for block in trip_log.replanning.revised_day.blocks %}
+          <div class="day-block"><div class="time">{{ block.time_block }}</div><div><div class="theme">{{ block.theme }}</div><div class="loc">{{ block.location_hint }}</div></div></div>
+          {% endfor %}
+        </div>
+        <div>
+          <div class="col-title">改了什麼</div>
+          <p style="font-size:.88rem;">{{ trip_log.replanning.change_summary }}</p>
+        </div>
+      </div>
+      <div class="notification-box">📱 數位禮賓通知：{{ trip_log.replanning.concierge_notification }}</div>
+      {% if trip_log.replanning.confirmation %}
+      <div class="confirm-line">
+        <span class="who">虛擬使用者：</span>
+        {{ "✅ 接受調整" if trip_log.replanning.confirmation.status == "confirmed" else "❌ 婉拒調整" }}
+        — {{ trip_log.replanning.confirmation.feedback }}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if trip_log.stages.review %}
+  <section class="review">
+    <h2><span class="icon">⭐</span> 最終評價與分享</h2>
+    <div class="card review-card">
+      <div class="stars">{{ "★" * (trip_log.stages.review.overall_rating | round | int) }}{{ "☆" * (5 - (trip_log.stages.review.overall_rating | round | int)) }}
+        <span style="font-size:1rem; color:var(--text-muted);"> {{ trip_log.stages.review.overall_rating }} / 5</span>
+      </div>
+      <div class="cat-ratings">
+        {% for cat in trip_log.stages.review.category_ratings %}
+        <span>{{ cat.category }} {{ cat.rating }}</span>
+        {% endfor %}
+      </div>
+      <p>{{ trip_log.stages.review.review_text }}</p>
+      <p style="font-size:.85rem; color:var(--text-muted);">{{ "👍 會推薦給朋友" if trip_log.stages.review.would_recommend else "🤔 暫時不會推薦" }} · {{ trip_log.stages.review.persona_alignment_notes }}</p>
+      <div class="share-box">
+        <div class="label">可分享貼文</div>
+        {{ trip_log.stages.review.share_caption }}
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  <footer class="disclaimer">
+    本 dashboard 中，標示「真實資料」的內容（靈感、餐飲、景點、購物）來自真實網路搜尋並附上來源連結；其餘標示「模擬資料」的內容（交通、住宿、活動）皆為 LLM 生成的模擬候選方案，過程中沒有發生任何真實訂位或付款。虛擬使用者的所有確認與評價，皆由獨立的 UserSimulator agent 依人物設定模擬產生。
+  </footer>
+
+</div>
+</body>
+</html>

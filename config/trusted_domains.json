@@ -1,0 +1,10 @@
+{
+  "description": "Example trusted-domain allowlist for the 'allowlist' site_mode. Brand-agnostic — replace with whatever content sources you consider trustworthy for a given persona/market. Only used by the real-search stages: inspiration, dining, attractions, shopping.",
+  "domains": [
+    "tripadvisor.com",
+    "timeout.com",
+    "lonelyplanet.com",
+    "michelin.com",
+    "taiwan.net.tw"
+  ]
+}
