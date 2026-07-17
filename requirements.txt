@@ -2,3 +2,12 @@ anthropic>=0.75.0
 pydantic>=2.7
 jinja2>=3.1
 python-dotenv>=1.0
+fastapi>=0.115
+uvicorn>=0.32
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.140
+# Pinned below 43: newer cryptography (a transitive dependency of google-auth)
+# stopped shipping prebuilt wheels for Python 3.9, which forces a from-source
+# build requiring a working Rust/Cargo toolchain. If you're on Python >=3.10
+# this pin is unnecessary and can be dropped.
+cryptography>=42,<43

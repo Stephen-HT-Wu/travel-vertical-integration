@@ -5,7 +5,7 @@ Pydantic models to `client.messages.parse(output_format=...)`, whose
 JSON-schema translation does not support `additionalProperties`-style
 free-form dicts or recursion.
 """
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -24,6 +24,59 @@ class RunConfig(BaseModel):
     allowed_domains: List[str] = []
     model: str = "claude-opus-4-8"
     language: str = "zh-TW"
+
+
+# ---------------------------------------------------------------------------
+# Cost/token/time telemetry — for feasibility assessment, not exact billing.
+# ---------------------------------------------------------------------------
+class CallMetrics(BaseModel):
+    stage: str
+    call_type: Literal["structured", "web_search"]
+    model: str
+    input_tokens: int
+    output_tokens: int
+    web_search_requests: int = 0
+    duration_ms: float
+    cost_usd: float
+
+
+class StageMetrics(BaseModel):
+    stage: str
+    calls: List[CallMetrics] = []
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_web_search_requests: int = 0
+    total_duration_ms: float = 0
+    total_cost_usd: float = 0
+
+    @classmethod
+    def from_calls(cls, stage: str, calls: List[CallMetrics]) -> "StageMetrics":
+        return cls(
+            stage=stage,
+            calls=calls,
+            total_input_tokens=sum(c.input_tokens for c in calls),
+            total_output_tokens=sum(c.output_tokens for c in calls),
+            total_web_search_requests=sum(c.web_search_requests for c in calls),
+            total_duration_ms=sum(c.duration_ms for c in calls),
+            total_cost_usd=sum(c.cost_usd for c in calls),
+        )
+
+
+class RunMetrics(BaseModel):
+    stages: List[StageMetrics] = []
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_web_search_requests: int = 0
+    total_duration_ms: float = 0
+    total_cost_usd: float = 0
+
+    def add_stage(self, stage_metrics: StageMetrics) -> None:
+        self.stages.append(stage_metrics)
+        self.total_input_tokens += stage_metrics.total_input_tokens
+        self.total_output_tokens += stage_metrics.total_output_tokens
+        self.total_web_search_requests += stage_metrics.total_web_search_requests
+        self.total_duration_ms += stage_metrics.total_duration_ms
+        self.total_cost_usd += stage_metrics.total_cost_usd
 
 
 class HITLLogEntry(BaseModel):
@@ -51,6 +104,14 @@ class InspirationDestinationOption(BaseModel):
 class InspirationOutput(BaseModel):
     destination_options: List[InspirationDestinationOption]
     queries_used: List[str]
+
+
+class InspirationChatTurn(BaseModel):
+    """One turn of the real-user chat conversation for inspiration
+    exploration. reply_message is shown as a chat bubble; destination_options
+    is the current (possibly refined) proposal, redrawn each turn."""
+    reply_message: str
+    destination_options: List[InspirationDestinationOption]
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +142,12 @@ class ItineraryOutput(BaseModel):
     confirmation: Optional[ItineraryConfirmation] = None
 
 
+class ItineraryChatTurn(BaseModel):
+    """One turn of the real-user chat conversation for itinerary planning."""
+    reply_message: str
+    days: List[ItineraryDay]
+
+
 # ---------------------------------------------------------------------------
 # Generic candidate stage output — shared by transportation, accommodation,
 # dining, attractions, activities, shopping. data_source distinguishes the
@@ -105,6 +172,19 @@ class CandidateConfirmation(BaseModel):
     feedback: str
 
 
+class SimulatedOrder(BaseModel):
+    """A mocked 'redirected out to book, order confirmed' record. This is
+    always fabricated locally (no LLM call, no real payment/booking system
+    contacted) — order_id is a random token, not a real confirmation number."""
+    order_id: str
+    stage: str
+    candidate_id: str
+    candidate_name: str
+    price_range: str
+    confirmed_at: str
+    is_simulated: bool = True
+
+
 class CandidateStageOutput(BaseModel):
     day_number: Optional[int] = None
     time_block: Optional[str] = None
@@ -112,6 +192,16 @@ class CandidateStageOutput(BaseModel):
     agent_selected_candidate_id: str
     agent_selection_rationale: str
     confirmation: Optional[CandidateConfirmation] = None
+    order: Optional[SimulatedOrder] = None
+
+
+class CandidateChatTurn(BaseModel):
+    """One turn of the real-user chat conversation for a transaction-candidate
+    stage (transportation/accommodation/activities)."""
+    reply_message: str
+    candidates: List[CandidateOption]
+    agent_selected_candidate_id: str
+    agent_selection_rationale: str
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +276,19 @@ class StageResults(BaseModel):
     review: Optional[ReviewOutput] = None
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    timestamp: str
+
+
+class CalendarSyncResult(BaseModel):
+    synced_at: str
+    calendar_event_count: int
+    calendar_id: str
+    event_links: List[str] = []
+
+
 class TripLog(BaseModel):
     run_id: str
     created_at: str
@@ -195,6 +298,9 @@ class TripLog(BaseModel):
     disruption_event: Optional[DisruptionEvent] = None
     replanning: Optional[ReplanningOutput] = None
     hitl_log: List[HITLLogEntry] = []
+    metrics: RunMetrics = RunMetrics()
+    chat_transcripts: Dict[str, List[ChatMessage]] = {}
+    calendar_sync: Optional[CalendarSyncResult] = None
 
 
 # ---------------------------------------------------------------------------

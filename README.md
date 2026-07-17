@@ -63,6 +63,39 @@ python tests/test_sanity.py output/trip_log.json
 
 檢查每個階段是否都有產出、`data_source` 是否符合預期（真實搜尋階段皆為 `real_search` 且有 `source_url`，模擬階段皆為 `simulated`）、動態重排橋段是否存在並被確認過、`hitl_log` 筆數是否合理、評分是否落在 `[1,5]`。
 
+## Google Calendar 設定
+
+互動版 demo 的「加入 Google Calendar」功能需要一組你自己在 Google Cloud Console 建立的 OAuth 2.0 用戶端憑證。這個專案不會、也不可能內建任何真實憑證——每一次寫入行事曆，都必須先經過 Google 自己的同意畫面，由你本人核准。
+
+1. 前往 [Google Cloud Console](https://console.cloud.google.com/)，建立一個新專案（或選擇既有專案）。
+
+2. 啟用 Google Calendar API：左側選單 **APIs & Services → Library**，搜尋「Google Calendar API」，點進去按 **Enable**。
+
+3. 設定 OAuth 同意畫面：**APIs & Services → OAuth consent screen**。
+   - User Type 選 **External**（除非你有 Google Workspace 網域）。
+   - 填必填欄位（App name、User support email、Developer contact）即可，不需要送審。
+   - Scopes 這步可以先跳過（程式碼裡直接指定 `calendar.events` 這個 scope）。
+   - Test users：把你自己要用來測試的 Google 帳號加進去。App 會停留在「Testing」狀態（未送審發布），只有加進 Test users 清單的帳號才能完成授權。
+
+4. 建立憑證：**APIs & Services → Credentials → Create Credentials → OAuth client ID**。
+   - Application type 選 **Web application**。
+   - Name 隨意，例如「travel-agent-demo-local」。
+   - **Authorized redirect URIs** 一定要加上：
+     ```
+     http://127.0.0.1:8000/api/calendar/oauth/callback
+     ```
+     這個網址要完全 match（含 http、port、路徑），不然 Google 會回傳 `redirect_uri_mismatch` 錯誤。
+
+5. 建立完成後下載 JSON（Credentials 列表點進去 **Download JSON**），存成專案根目錄的：
+   ```
+   google_oauth_credentials.json
+   ```
+   這個檔名是程式碼裡寫死的路徑，已加進 `.gitignore`，不會被 commit。
+
+6. 完成後，webapp 的「加入 Google Calendar」按鈕就會導向 Google 的同意畫面；登入並同意後會被導回本機的 `/api/calendar/oauth/callback`，用你剛核准的授權把確認過的行程逐一寫成事件到你的主要行事曆（primary calendar）。
+
+**注意**：這裡用的 scope 是 `calendar.events`（只能建立/管理事件），不是完整的行事曆讀寫權限；App 在 Testing 狀態下 token 效期較短，但本機 demo 用途完全足夠；若要給別人展示，對方也需要被加進你 Google Cloud 專案的 Test users 清單才能完成授權——這是 Google 對 Testing 狀態 app 的限制。
+
 ## 專案結構
 
 ```

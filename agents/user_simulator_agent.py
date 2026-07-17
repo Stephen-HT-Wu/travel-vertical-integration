@@ -37,6 +37,7 @@ class UserSimulatorAgent(StageAgent):
         self._role_prefix = PERSONA_ROLE_PREFIX.format(persona_summary=persona.summary_zh())
 
     def confirm_itinerary(self, itinerary: ItineraryOutput) -> ItineraryConfirmation:
+        self.stage_name = "itinerary"  # attributes this call's cost to the stage being confirmed
         system = f"{self._role_prefix}\n\n{ITINERARY_INSTRUCTION}"
         user_content = f"行程草稿：\n{summarize_itinerary(itinerary)}"
         return self.run_mock(system, user_content, ItineraryConfirmation)
@@ -44,6 +45,7 @@ class UserSimulatorAgent(StageAgent):
     def confirm_candidate(
         self, stage_name: str, stage_output: CandidateStageOutput
     ) -> CandidateConfirmation:
+        self.stage_name = stage_name
         system = f"{self._role_prefix}\n\n{CANDIDATE_INSTRUCTION.format(stage_name=stage_name)}"
         candidates_summary = "\n".join(
             f"- [{c.id}] {c.name}（{c.vendor}，{c.price_range}）{'← agent 推薦' if c.id == stage_output.agent_selected_candidate_id else ''}"
@@ -56,6 +58,7 @@ class UserSimulatorAgent(StageAgent):
         return self.run_mock(system, user_content, CandidateConfirmation)
 
     def confirm_replanning(self, replanning: ReplanningOutput) -> ReplanningConfirmation:
+        self.stage_name = "replanning"
         system = f"{self._role_prefix}\n\n{REPLANNING_INSTRUCTION}"
         user_content = (
             f"突發狀況：{replanning.trigger.description}\n\n"
@@ -65,6 +68,7 @@ class UserSimulatorAgent(StageAgent):
         return self.run_mock(system, user_content, ReplanningConfirmation)
 
     def final_review(self, trip_log: TripLog) -> ReviewOutput:
+        self.stage_name = "review"
         system = f"{self._role_prefix}\n\n{FINAL_REVIEW_INSTRUCTION}"
         user_content = f"完整行程摘要：\n{summarize_stage_results(trip_log.stages)}"
         if trip_log.replanning:

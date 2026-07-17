@@ -1,0 +1,663 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>旅遊產業垂直整合 Agent Demo — 對話版</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #ffffff; --surface-2: #f1f1ef; --border: #e3e2de;
+    --text: #1c1c1a; --text-muted: #6b6b64; --accent: #b45309; --accent-2: #0f6b5c;
+    --real: #0f6b5c; --real-bg: #e6f3ef; --sim: #8a6d1a; --sim-bg: #faf0da;
+    --running: #1d5fb8; --running-bg: #e5eefb; --error: #a3402f; --error-bg: #fbeae6;
+    --bubble-user: #0f6b5c; --bubble-user-text: #ffffff; --bubble-assistant: #f1f1ef;
+    --radius: 10px; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 1px 8px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --surface: #202226; --surface-2: #26282c; --border: #34363a;
+      --text: #ececea; --text-muted: #a2a29c; --accent: #e0a24a; --accent-2: #4fbfa8;
+      --real: #4fbfa8; --real-bg: #17332c; --sim: #e0c168; --sim-bg: #362f18;
+      --running: #6ba6f2; --running-bg: #17253b; --error: #e08a7a; --error-bg: #3a201c;
+      --bubble-user: #2d6b5c; --bubble-user-text: #ffffff; --bubble-assistant: #26282c;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 1px 12px rgba(0,0,0,.25);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 1.25rem 2rem; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Helvetica Neue", "PingFang TC", "Noto Sans TC", sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  header.page-header { padding: 2.25rem 0 .5rem; }
+  header.page-header h1 { font-size: 1.5rem; margin: 0 0 .35rem; }
+  header.page-header .sub { color: var(--text-muted); font-size: .88rem; }
+  section { margin: 1.25rem 0; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 1rem 1.1rem; box-shadow: var(--shadow);
+  }
+  .hidden { display: none !important; }
+
+  /* --- persona form --- */
+  #form-card .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: .85rem; }
+  #form-card label { display: block; font-size: .78rem; color: var(--text-muted); margin-bottom: .3rem; }
+  #form-card select, #form-card input {
+    width: 100%; padding: .5rem .55rem; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text); font-size: .92rem;
+  }
+  #days-field { transition: opacity .15s; }
+  .actions { margin-top: 1.1rem; display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  button.primary {
+    background: var(--accent); color: #fff; border: none; border-radius: 999px;
+    padding: .6rem 1.4rem; font-size: .9rem; font-weight: 600; cursor: pointer;
+  }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  button.secondary {
+    background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: 999px;
+    padding: .5rem 1.1rem; font-size: .85rem; cursor: pointer;
+  }
+  button.small { padding: .35rem .8rem; font-size: .8rem; }
+
+  /* --- sticky totals bar --- */
+  #totals-bar {
+    position: sticky; top: 0; z-index: 10; margin: 0 -1.25rem 1rem; padding: .6rem 1.25rem;
+    background: var(--surface); border-bottom: 1px solid var(--border); display: flex; gap: 1.3rem;
+    flex-wrap: wrap; align-items: center; font-size: .82rem; backdrop-filter: blur(6px);
+  }
+  #totals-bar .stat .label { color: var(--text-muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
+  #totals-bar .stat .value { font-size: 1rem; font-variant-numeric: tabular-nums; }
+  #totals-bar .run-status { margin-left: auto; font-size: .78rem; padding: .2rem .6rem; border-radius: 999px; }
+  .run-status.running { background: var(--running-bg); color: var(--running); }
+  .run-status.done { background: var(--real-bg); color: var(--real); }
+  .run-status.error { background: var(--error-bg); color: var(--error); }
+
+  /* --- phase stepper --- */
+  #phase-stepper { display: flex; flex-wrap: wrap; gap: .35rem; font-size: .76rem; }
+  #phase-stepper .step-chip {
+    padding: .25rem .65rem; border-radius: 999px; background: var(--surface-2); color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  #phase-stepper .step-chip.current { background: var(--running-bg); color: var(--running); border-color: transparent; font-weight: 600; }
+  #phase-stepper .step-chip.past { background: var(--real-bg); color: var(--real); border-color: transparent; }
+
+  /* --- chat --- */
+  #chat-log { display: flex; flex-direction: column; gap: .75rem; margin-bottom: .75rem; }
+  .msg { max-width: 88%; }
+  .msg.user { align-self: flex-end; }
+  .msg.assistant { align-self: flex-start; }
+  .msg .bubble { padding: .6rem .85rem; border-radius: 14px; font-size: .92rem; white-space: pre-wrap; }
+  .msg.user .bubble { background: var(--bubble-user); color: var(--bubble-user-text); border-bottom-right-radius: 4px; }
+  .msg.assistant .bubble { background: var(--bubble-assistant); color: var(--text); border-bottom-left-radius: 4px; }
+  .msg .meta { font-size: .7rem; color: var(--text-muted); margin-top: .25rem; }
+  .proposal-cards { margin-top: .5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px,1fr)); gap: .6rem; }
+  .proposal-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: .7rem .8rem; }
+  .proposal-card .name { font-weight: 700; }
+  .proposal-card .sub { font-size: .82rem; color: var(--text-muted); margin-top: .25rem; }
+  .proposal-card a { color: var(--accent-2); font-size: .78rem; }
+  .proposal-card .pick-btn { margin-top: .55rem; }
+  .badge { display: inline-block; font-size: .68rem; padding: .1rem .5rem; border-radius: 999px; font-weight: 600; }
+  .badge-real { background: var(--real-bg); color: var(--real); }
+  .badge-sim { background: var(--sim-bg); color: var(--sim); }
+  .badge-agent-pick { background: var(--running-bg); color: var(--running); margin-left: .3rem; }
+  .day-block { display: flex; gap: .6rem; padding: .3rem 0; border-bottom: 1px dashed var(--border); font-size: .86rem; }
+  .day-block:last-child { border-bottom: none; }
+  .day-block .time { flex: 0 0 90px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .day-title { font-weight: 700; margin: .5rem 0 .1rem; font-size: .85rem; }
+
+  #chat-input-row { display: flex; gap: .5rem; position: sticky; bottom: 0; background: var(--bg); padding: .5rem 0; }
+  #chat-input-row input {
+    flex: 1; padding: .65rem .85rem; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: .92rem;
+  }
+  #phase-confirm-row { margin: .6rem 0; display: flex; justify-content: flex-end; }
+  .typing-indicator { font-size: .82rem; color: var(--text-muted); font-style: italic; }
+
+  /* --- checkout --- */
+  #checkout-panel .order-summary { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  #checkout-panel .sim-note { font-size: .76rem; color: var(--text-muted); margin-top: .4rem; }
+  .order-success { background: var(--real-bg); color: var(--real); border-radius: 8px; padding: .7rem .85rem; font-size: .88rem; }
+
+  /* --- tail auto-run steps (reused visual language) --- */
+  .step { border-left: 3px solid var(--border); padding-left: .9rem; margin-bottom: .8rem; }
+  .step.running { border-left-color: var(--running); }
+  .step.done { border-left-color: var(--real); }
+  .step-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .step-head .icon { font-size: 1.05rem; opacity: .5; }
+  .step.running .step-head .icon, .step.done .step-head .icon { opacity: 1; }
+  .step-status { font-size: .72rem; padding: .1rem .5rem; border-radius: 999px; background: var(--surface-2); color: var(--text-muted); }
+  .step.running .step-status { background: var(--running-bg); color: var(--running); }
+  .step.done .step-status { background: var(--real-bg); color: var(--real); }
+  .spinner {
+    width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--running-bg);
+    border-top-color: var(--running); display: inline-block; animation: spin .7s linear infinite; margin-right: .3rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .metrics-badge { font-size: .72rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .step-body { margin-top: .4rem; font-size: .85rem; }
+  .confirm-line { margin-top: .4rem; padding: .4rem .55rem; border-radius: 8px; background: var(--surface-2); font-size: .8rem; }
+
+  /* --- final --- */
+  .review-card .stars { color: var(--accent); font-size: 1.1rem; }
+  .share-box { margin-top: .6rem; padding: .65rem .85rem; border-radius: 8px; background: var(--real-bg); color: var(--real); font-size: .88rem; }
+  #calendar-panel .date-row { display: flex; gap: .5rem; align-items: center; margin: .5rem 0; }
+  #error-banner { background: var(--error-bg); color: var(--error); padding: .8rem 1rem; border-radius: 8px; font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="page-header">
+    <h1>旅遊產業垂直整合 Agent Demo</h1>
+    <div class="sub">對話版 — 用聊天完成靈感、行程與交通/住宿/活動選購（含模擬下單），最後可加入你的 Google Calendar</div>
+  </header>
+
+  <section id="form-section">
+    <div class="card" id="form-card">
+      <form id="persona-form">
+        <div class="grid">
+          <div>
+            <label>年齡層</label>
+            <select name="age_group">
+              <option value="18-25">18-25</option>
+              <option value="26-35" selected>26-35</option>
+              <option value="36-50">36-50</option>
+              <option value="51+">51+</option>
+            </select>
+          </div>
+          <div>
+            <label>性別</label>
+            <select name="gender">
+              <option value="unspecified" selected>不指定</option>
+              <option value="male">男性</option>
+              <option value="female">女性</option>
+            </select>
+          </div>
+          <div>
+            <label>出發地</label>
+            <input type="text" name="home_location" value="台北">
+          </div>
+          <div>
+            <label>行程長度</label>
+            <select name="trip_length_type" id="trip-length-select">
+              <option value="half_day">半日遊</option>
+              <option value="one_day" selected>一日遊</option>
+              <option value="multi_day">多日遊</option>
+            </select>
+          </div>
+          <div id="days-field" class="hidden">
+            <label>天數</label>
+            <input type="number" name="days" value="3" min="2" max="14">
+          </div>
+          <div>
+            <label>同行人數</label>
+            <input type="number" name="party_size" value="2" min="1" max="10">
+          </div>
+          <div>
+            <label>搜尋模式</label>
+            <select name="site_mode">
+              <option value="unrestricted" selected>不限定網站</option>
+              <option value="allowlist">限定可信網域清單</option>
+            </select>
+          </div>
+          <div>
+            <label>模型</label>
+            <select name="model">
+              <option value="claude-opus-4-8" selected>claude-opus-4-8</option>
+              <option value="claude-sonnet-5">claude-sonnet-5</option>
+              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="primary" id="start-btn">開始對話</button>
+          <span class="typing-indicator hidden" id="start-loading">第一次搜尋靈感通常需要 30-90 秒，請稍候…</span>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <div id="totals-bar" class="hidden">
+    <div class="stat"><div class="label">經過時間</div><div class="value" id="stat-elapsed">0.0s</div></div>
+    <div class="stat"><div class="label">Tokens（輸入+輸出）</div><div class="value" id="stat-tokens">0 + 0</div></div>
+    <div class="stat"><div class="label">預估花費</div><div class="value" id="stat-cost">$0.0000</div></div>
+    <div class="stat"><div class="label">搜尋次數</div><div class="value" id="stat-searches">0</div></div>
+    <div class="run-status running hidden" id="run-status">對話中</div>
+  </div>
+
+  <section id="phase-stepper-section" class="hidden">
+    <div id="phase-stepper"></div>
+  </section>
+
+  <div id="error-banner" class="hidden"></div>
+
+  <!-- chat phase UI -->
+  <section id="chat-section" class="hidden">
+    <div id="chat-log"></div>
+    <div id="phase-confirm-row"></div>
+    <div id="chat-input-row">
+      <input type="text" id="chat-input" placeholder="輸入訊息…">
+      <button type="button" class="primary" id="send-btn">送出</button>
+    </div>
+  </section>
+
+  <!-- checkout panel -->
+  <section id="checkout-section" class="hidden card" id="checkout-panel"></section>
+
+  <!-- tail auto-run steps -->
+  <section id="tail-section" class="hidden">
+    <h2 style="font-size:1rem;">🚀 自動接續：餐飲 / 景點 / 購物 / 導覽 / 動態重排 / 評價</h2>
+    <div id="tail-steps"></div>
+  </section>
+
+  <!-- final actions -->
+  <section id="final-section" class="hidden">
+    <div id="final-review-card" class="card review-card"></div>
+    <div class="card" id="calendar-panel" style="margin-top:.75rem;">
+      <strong>📅 加入 Google Calendar</strong>
+      <div class="date-row">
+        <label style="font-size:.82rem; color:var(--text-muted);">行程從哪一天開始？</label>
+        <input type="date" id="calendar-start-date">
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="calendar-connect-btn">使用 Google 帳號登入並授權</button>
+      </div>
+      <div id="calendar-result" style="margin-top:.6rem;"></div>
+    </div>
+    <div class="actions" style="margin-top:.75rem;">
+      <a id="link-dashboard" href="#" target="_blank"><button type="button" class="secondary">查看完整 Dashboard</button></a>
+      <a id="link-json" href="#" target="_blank"><button type="button" class="secondary">下載 trip_log.json</button></a>
+    </div>
+  </section>
+</div>
+
+<script>
+const PHASES = ["inspiration", "itinerary", "transportation", "accommodation", "activities", "tail", "done"];
+const PHASE_LABELS = {
+  inspiration: "靈感探索", itinerary: "行程規劃", transportation: "交通", accommodation: "住宿",
+  activities: "活動", tail: "餐飲/景點/購物/導覽/重排/評價", done: "完成",
+};
+const CANDIDATE_PHASE_LABELS = { transportation: "交通", accommodation: "住宿", activities: "活動" };
+const TAIL_STAGE_ORDER = ["dining", "attractions", "shopping", "in_trip_guide", "replanning", "review"];
+const TAIL_STAGE_LABELS = {
+  dining: "餐飲", attractions: "景點", shopping: "購物", in_trip_guide: "行中導覽",
+  replanning: "動態重新排程", review: "評價與分享",
+};
+const TAIL_STAGE_ICONS = { dining: "🍜", attractions: "🎡", shopping: "🛍️", in_trip_guide: "🧭", replanning: "⚡", review: "⭐" };
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = (s === null || s === undefined) ? "" : String(s);
+  return d.innerHTML;
+}
+function safeUrl(u) { return (typeof u === "string" && /^https?:\/\//.test(u)) ? u : "#"; }
+function fmtMoney(v) { return "$" + Number(v).toFixed(4); }
+function fmtSeconds(ms) { return (ms / 1000).toFixed(1) + "s"; }
+
+let runId = null;
+let phase = "inspiration";
+let startTime = null;
+let elapsedTimer = null;
+let runningTotals = {total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0, total_web_search_requests: 0};
+
+function tickElapsed() {
+  if (!startTime) return;
+  document.getElementById("stat-elapsed").textContent = ((Date.now() - startTime) / 1000).toFixed(1) + "s";
+}
+function updateTotalsBar(totals) {
+  runningTotals = totals;
+  document.getElementById("stat-tokens").textContent = `${totals.total_input_tokens} + ${totals.total_output_tokens}`;
+  document.getElementById("stat-cost").textContent = fmtMoney(totals.total_cost_usd);
+  document.getElementById("stat-searches").textContent = totals.total_web_search_requests;
+}
+
+function renderStepper() {
+  const el = document.getElementById("phase-stepper");
+  const order = ["inspiration", "itinerary", "transportation", "accommodation", "activities", "tail", "done"];
+  const idx = order.indexOf(phase);
+  el.innerHTML = order.map((p, i) => {
+    const cls = i < idx ? "past" : (i === idx ? "current" : "");
+    return `<span class="step-chip ${cls}">${PHASE_LABELS[p]}</span>`;
+  }).join("");
+}
+
+function appendChatMessage(role, text, proposalHtml) {
+  const log = document.getElementById("chat-log");
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.innerHTML = `<div class="bubble">${esc(text)}</div>` + (proposalHtml ? `<div class="proposal-cards">${proposalHtml}</div>` : "");
+  log.appendChild(div);
+  div.scrollIntoView({behavior: "smooth", block: "end"});
+}
+
+function renderInspirationProposal(options) {
+  return options.map(o => `
+    <div class="proposal-card">
+      <div class="name">${esc(o.name)}</div>
+      <div class="sub">${esc(o.summary)}</div>
+      <a href="${safeUrl(o.source_url)}" target="_blank" rel="noopener">🔗 ${esc(o.source_title)}</a><br>
+      <button type="button" class="primary small pick-btn" onclick="pickInspiration('${o.id}')">就選這個</button>
+    </div>`).join("");
+}
+
+function renderItineraryProposal(days) {
+  let html = "";
+  for (const day of days) {
+    html += `<div class="day-title">第 ${day.day_number} 天</div>`;
+    for (const b of day.blocks) {
+      html += `<div class="day-block"><div class="time">${esc(b.time_block)}</div><div><strong>${esc(b.theme)}</strong> — ${esc(b.location_hint)}</div></div>`;
+    }
+  }
+  return `<div class="proposal-card" style="grid-column:1/-1;">${html}</div>`;
+}
+
+function renderCandidateProposal(stage, candidates, agentPickId) {
+  return candidates.map(c => `
+    <div class="proposal-card">
+      <div class="name">${esc(c.name)} ${c.id === agentPickId ? '<span class="badge badge-agent-pick">agent 推薦</span>' : ''}</div>
+      <div class="sub">${esc(c.vendor)} · ${esc(c.price_range)} · ⭐${c.rating}</div>
+      <div class="sub">${esc(c.description)}</div>
+      <button type="button" class="primary small pick-btn" onclick="pickCandidate('${stage}','${c.id}')">選這個，前往訂購</button>
+    </div>`).join("");
+}
+
+function setPhaseConfirmRow(html) {
+  document.getElementById("phase-confirm-row").innerHTML = html;
+}
+
+async function apiPost(path, body) {
+  const resp = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({detail: resp.statusText}));
+    throw new Error(err.detail || "請求失敗");
+  }
+  return resp.json();
+}
+
+function showTyping(show) {
+  document.getElementById("send-btn").disabled = show;
+  let el = document.getElementById("typing-indicator");
+  if (show) {
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "typing-indicator";
+      el.className = "typing-indicator";
+      el.textContent = "agent 正在回覆…";
+      document.getElementById("chat-log").appendChild(el);
+    }
+  } else if (el) {
+    el.remove();
+  }
+}
+
+async function sendChatMessage(text) {
+  showTyping(true);
+  try {
+    const r = await apiPost(`/api/chat/${runId}/message`, {message: text});
+    let proposalHtml = "";
+    if (phase === "inspiration") proposalHtml = renderInspirationProposal(r.proposal.destination_options);
+    else if (phase === "itinerary") proposalHtml = renderItineraryProposal(r.proposal.days);
+    else proposalHtml = renderCandidateProposal(phase, r.proposal.candidates, r.proposal.agent_selected_candidate_id);
+    appendChatMessage("assistant", r.reply_message, proposalHtml);
+    updateTotalsBar(r.totals);
+    updatePhaseConfirmRowForCurrentPhase();
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    showTyping(false);
+  }
+}
+
+function updatePhaseConfirmRowForCurrentPhase() {
+  if (phase === "itinerary") {
+    setPhaseConfirmRow(`<button type="button" class="primary" onclick="confirmItinerary()">行程確定了，下一步</button>`);
+  } else {
+    setPhaseConfirmRow("");
+  }
+}
+
+window.pickInspiration = async function (optionId) {
+  try {
+    const r = await apiPost(`/api/chat/${runId}/confirm-inspiration`, {option_id: optionId});
+    appendChatMessage("user", `就選「${r.selection.name}」`);
+    phase = "itinerary";
+    renderStepper();
+    setPhaseConfirmRow("");
+    await sendChatMessage("");
+  } catch (e) { showError(e.message); }
+};
+
+window.confirmItinerary = async function () {
+  try {
+    const r = await apiPost(`/api/chat/${runId}/confirm-itinerary`, {});
+    appendChatMessage("user", "行程確定了！");
+    phase = "transportation";
+    renderStepper();
+    setPhaseConfirmRow("");
+    await sendChatMessage("");
+  } catch (e) { showError(e.message); }
+};
+
+window.pickCandidate = async function (stage, candidateId) {
+  try {
+    const r = await apiPost(`/api/chat/${runId}/confirm-candidate`, {stage, candidate_id: candidateId});
+    appendChatMessage("user", `選「${r.candidate.name}」`);
+    showCheckoutPanel(stage, r.candidate);
+  } catch (e) { showError(e.message); }
+};
+
+function showCheckoutPanel(stage, candidate) {
+  const panel = document.getElementById("checkout-section");
+  panel.classList.remove("hidden");
+  panel.innerHTML = `
+    <div class="order-summary">
+      <div>
+        <strong>🧾 導向 ${esc(CANDIDATE_PHASE_LABELS[stage])} 訂購頁面（模擬）</strong>
+        <div class="sub" style="color:var(--text-muted); font-size:.85rem; margin-top:.3rem;">${esc(candidate.name)} · ${esc(candidate.price_range)}</div>
+      </div>
+      <button type="button" class="primary" id="place-order-btn">確認送出訂單（模擬）</button>
+    </div>
+    <div class="sim-note">這是模擬流程，不會發生真實金流或訂位。</div>
+  `;
+  document.getElementById("place-order-btn").onclick = () => placeOrder(stage);
+  panel.scrollIntoView({behavior: "smooth", block: "center"});
+}
+
+async function placeOrder(stage) {
+  try {
+    const r = await apiPost(`/api/chat/${runId}/place-order`, {stage});
+    const panel = document.getElementById("checkout-section");
+    panel.innerHTML = `<div class="order-success">✅ 訂單已成立（模擬）— 訂單編號 ${esc(r.order.order_id)}</div>`;
+    setTimeout(() => {
+      panel.classList.add("hidden");
+      phase = r.next_phase;
+      renderStepper();
+      if (phase === "tail") {
+        document.getElementById("chat-section").classList.add("hidden");
+        startTail();
+      } else {
+        sendChatMessage("");
+      }
+    }, 1400);
+  } catch (e) { showError(e.message); }
+}
+
+function showError(msg) {
+  const banner = document.getElementById("error-banner");
+  banner.classList.remove("hidden");
+  banner.textContent = "❌ " + msg;
+}
+
+// ---- tail auto-run (SSE), reuses the same event shapes as the batch pipeline ----
+function buildTailStepCards() {
+  const container = document.getElementById("tail-steps");
+  container.innerHTML = "";
+  for (const stage of TAIL_STAGE_ORDER) {
+    const div = document.createElement("div");
+    div.className = "step pending";
+    div.id = "tstep-" + stage;
+    div.innerHTML = `
+      <div class="step-head">
+        <span class="icon">${TAIL_STAGE_ICONS[stage]}</span>
+        <span>${TAIL_STAGE_LABELS[stage]}</span>
+        <span class="step-status" id="tstatus-${stage}">待開始</span>
+        <span class="metrics-badge" id="tmetrics-${stage}"></span>
+      </div>
+      <div class="step-body" id="tbody-${stage}"></div>
+    `;
+    container.appendChild(div);
+  }
+}
+
+function setTailStepStatus(stage, cls, text, spinner) {
+  const el = document.getElementById("tstep-" + stage);
+  if (!el) return;
+  el.className = "step " + cls;
+  document.getElementById("tstatus-" + stage).innerHTML = (spinner ? '<span class="spinner"></span>' : '') + esc(text);
+}
+
+function renderTailBody(stage, output) {
+  if (stage === "dining" || stage === "attractions" || stage === "shopping") {
+    const anyReal = output.candidates.some(c => c.data_source === "real_search");
+    const finalId = (output.confirmation && output.confirmation.final_candidate_id) || output.agent_selected_candidate_id;
+    const chosen = output.candidates.find(c => c.id === finalId);
+    return `<span class="badge ${anyReal ? 'badge-real' : 'badge-sim'}">${anyReal ? '真實資料' : '模擬資料'}</span>
+      <div style="margin-top:.3rem;">${chosen ? esc(chosen.name) + ' · ' + esc(chosen.vendor) : ''}</div>
+      <div class="confirm-line">🧑 虛擬使用者：${output.confirmation ? esc(output.confirmation.feedback) : ''}</div>`;
+  }
+  if (stage === "in_trip_guide") {
+    return output.guide_sections.map(s => `<div>第 ${s.day_number} 天：${s.tips.map(esc).join(' · ')}</div>`).join("");
+  }
+  if (stage === "replanning") {
+    return `<div>${esc(output.change_summary)}</div><div class="confirm-line">📱 ${esc(output.concierge_notification)}</div>`;
+  }
+  if (stage === "review") {
+    const full = Math.round(output.overall_rating);
+    return `
+      <div class="stars">${"★".repeat(full)}${"☆".repeat(5 - full)} ${output.overall_rating}/5</div>
+      <p>${esc(output.review_text)}</p>
+      <div class="share-box">${esc(output.share_caption)}</div>`;
+  }
+  return "";
+}
+
+function startTail() {
+  document.getElementById("tail-section").classList.remove("hidden");
+  buildTailStepCards();
+  const es = new EventSource(`/api/chat/${runId}/tail-events`);
+  es.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    const stage = event.stage;
+    if (event.type === "stage_started") {
+      setTailStepStatus(stage, "running", "執行中...", true);
+    } else if (event.type === "hitl_checkpoint") {
+      setTailStepStatus(stage, "running", "虛擬使用者確認中...", true);
+    } else if (event.type === "stage_completed") {
+      setTailStepStatus(stage, "done", "已完成", false);
+      document.getElementById("tmetrics-" + stage).textContent =
+        `${fmtSeconds(event.data.metrics.total_duration_ms)} · ${event.data.metrics.total_input_tokens}+${event.data.metrics.total_output_tokens} tok · ${fmtMoney(event.data.metrics.total_cost_usd)}`;
+      document.getElementById("tbody-" + stage).innerHTML = renderTailBody(stage, event.data.output);
+      updateTotalsBar(event.data.totals);
+    } else if (event.type === "run_completed") {
+      updateTotalsBar(event.data.totals);
+      phase = "done";
+      renderStepper();
+      clearInterval(elapsedTimer);
+      tickElapsed();
+      document.getElementById("run-status").className = "run-status done";
+      document.getElementById("run-status").textContent = "✅ 全部完成";
+      showFinal(event.data.trip_log);
+    } else if (event.type === "error") {
+      showError(event.data.message);
+      clearInterval(elapsedTimer);
+    }
+  };
+  es.addEventListener("done", () => es.close());
+}
+
+function showFinal(tripLog) {
+  document.getElementById("final-section").classList.remove("hidden");
+  const review = tripLog.stages.review;
+  const full = Math.round(review.overall_rating);
+  document.getElementById("final-review-card").innerHTML = `
+    <h2 style="font-size:1rem; margin-top:0;">⭐ 最終評價與分享</h2>
+    <div class="stars">${"★".repeat(full)}${"☆".repeat(5 - full)} ${review.overall_rating}/5</div>
+    <p>${esc(review.review_text)}</p>
+    <div class="share-box">${esc(review.share_caption)}</div>
+  `;
+  document.getElementById("link-dashboard").href = `/api/chat/${runId}/dashboard`;
+  document.getElementById("link-json").href = `/api/chat/${runId}/trip_log.json`;
+
+  const tomorrow = new Date(Date.now() + 86400000);
+  document.getElementById("calendar-start-date").value = tomorrow.toISOString().slice(0, 10);
+}
+
+document.getElementById("calendar-connect-btn").addEventListener("click", async () => {
+  const startDate = document.getElementById("calendar-start-date").value;
+  const resultEl = document.getElementById("calendar-result");
+  try {
+    const resp = await fetch(`/api/calendar/auth-url?run_id=${runId}&start_date=${startDate}`);
+    const data = await resp.json();
+    if (data.error) {
+      resultEl.innerHTML = `<div class="sim-note">⚠️ ${esc(data.error)}</div>`;
+      return;
+    }
+    window.location.href = data.auth_url;
+  } catch (e) {
+    resultEl.innerHTML = `<div class="sim-note">⚠️ 無法建立授權連結：${esc(e.message)}</div>`;
+  }
+});
+
+// ---- persona form submit: create session, kick off first inspiration turn ----
+document.getElementById("trip-length-select").addEventListener("change", (e) => {
+  document.getElementById("days-field").classList.toggle("hidden", e.target.value !== "multi_day");
+});
+
+document.getElementById("send-btn").addEventListener("click", () => {
+  const input = document.getElementById("chat-input");
+  const text = input.value.trim();
+  if (!text) return;
+  appendChatMessage("user", text);
+  input.value = "";
+  sendChatMessage(text);
+});
+document.getElementById("chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("send-btn").click();
+});
+
+document.getElementById("persona-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const payload = {
+    age_group: form.age_group.value, gender: form.gender.value, home_location: form.home_location.value,
+    trip_length_type: form.trip_length_type.value, days: parseInt(form.days.value, 10) || 1,
+    party_size: parseInt(form.party_size.value, 10) || 1, site_mode: form.site_mode.value, model: form.model.value,
+  };
+
+  document.getElementById("start-btn").disabled = true;
+  document.getElementById("start-loading").classList.remove("hidden");
+
+  try {
+    const startResp = await apiPost("/api/chat/start", payload);
+    runId = startResp.run_id;
+
+    document.getElementById("form-section").classList.add("hidden");
+    document.getElementById("totals-bar").classList.remove("hidden");
+    document.getElementById("run-status").classList.remove("hidden");
+    document.getElementById("phase-stepper-section").classList.remove("hidden");
+    document.getElementById("chat-section").classList.remove("hidden");
+    renderStepper();
+
+    startTime = Date.now();
+    elapsedTimer = setInterval(tickElapsed, 200);
+
+    await sendChatMessage("");
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    document.getElementById("start-loading").classList.add("hidden");
+  }
+});
+</script>
+</body>
+</html>

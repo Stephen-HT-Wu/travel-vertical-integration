@@ -1,12 +1,14 @@
 """Layer 2 — itinerary drafting, plus the dynamic-replanning bridge
 (Layer 2 dynamic scheduling + Layer 5 exception handling)."""
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from agents.base_agent import StageAgent
 from persona import Persona
 from schemas import (
     DisruptionEvent,
+    InspirationDestinationOption,
     InspirationOutput,
+    ItineraryChatTurn,
     ItineraryOutput,
     ReplanningOutput,
     StageResults,
@@ -29,6 +31,12 @@ DISRUPTION_SYSTEM = """你是一位情境模擬 agent。根據已確認的行程
 REPLAN_SYSTEM = """你是一位行程規劃 agent，現在需要因應一個行中突發狀況（disruption_event）重新安排受影響那一天的行程。
 
 只調整受影響當天（day_number 與 disruption_event 相同）的行程，其餘時段盡量維持原樣，只在必要時微調銜接。revised_day 是調整後的完整當日行程。change_summary 用人類看得懂的話說明「改了什麼、為什麼」。concierge_notification 模擬一則「數位禮賓」會發給旅客的簡短通知訊息（例如：偵測到狀況、已經怎麼調整、需不需要旅客確認）。"""
+
+CHAT_START_SYSTEM = """你是一位行程規劃顧問，正在跟真實旅客對話。根據人物設定與使用者選定的靈感主題，規劃一份具體的、分時段的行程。
+
+天數與步調要符合 trip_length_type（half_day/one_day/multi_day，multi_day 對應 days 天數）與 party_size。每一天用數個 time_block（例如 "09:00-10:30"）劃分，每個時段填入 theme、location_hint、notes。reply_message 用聊天口吻簡短介紹這份草案的安排邏輯，邀請使用者提出調整意見或確認。"""
+
+CHAT_REFINE_SYSTEM = """你是一位行程規劃顧問，根據對話紀錄與使用者最新的訊息調整行程。只調整使用者提到的部分，其餘時段盡量維持不變（除非改動會牽動銜接的時段）。reply_message 用聊天口吻回覆調整了什麼，或回答使用者的問題。"""
 
 
 class ItineraryAgent(StageAgent):
@@ -81,3 +89,21 @@ class ItineraryAgent(StageAgent):
             "請重新安排受影響當天的行程。"
         )
         return self.run_mock(REPLAN_SYSTEM, user_content, ReplanningOutput)
+
+    def chat(
+        self,
+        persona: Persona,
+        history: List[dict],
+        user_message: str,
+        inspiration_choice: InspirationDestinationOption,
+    ) -> Tuple[ItineraryChatTurn, List[dict]]:
+        if not history:
+            user_content = (
+                f"人物設定：{persona.summary_zh()}\n"
+                f"trip_length_type={persona.trip_length_type}, days={persona.days}, "
+                f"party_size={persona.party_size}\n\n"
+                f"使用者選定的靈感：{inspiration_choice.name}：{inspiration_choice.summary}\n\n"
+                f"{user_message or '請幫我規劃行程。'}"
+            )
+            return self.start_chat(CHAT_START_SYSTEM, user_content, ItineraryChatTurn)
+        return self.continue_chat(CHAT_REFINE_SYSTEM, history, user_message, ItineraryChatTurn)

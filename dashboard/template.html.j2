@@ -80,17 +80,9 @@
   }
   .badge-real { background: var(--real-bg); color: var(--real); }
   .badge-sim { background: var(--sim-bg); color: var(--sim); }
-  .badge-layer { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
-  .maturity-高 { color: var(--high); }
-  .maturity-中 { color: var(--mid); }
-  .maturity-低 { color: var(--low); }
   .persona-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: .75rem; }
   .persona-grid .item .label { font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
   .persona-grid .item .value { font-size: 1.05rem; margin-top: .15rem; }
-  .legend-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-  .legend-table th, .legend-table td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--border); }
-  .legend-table th { color: var(--text-muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; }
-  .legend-table tr.not-covered td { color: var(--text-muted); font-style: italic; }
   .insp-grid, .cand-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: .75rem; }
   .insp-card a { color: var(--accent-2); text-decoration: none; font-size: .82rem; word-break: break-word; }
   .insp-card a:hover { text-decoration: underline; }
@@ -145,27 +137,9 @@
     </div>
   </section>
 
-  <section class="maturity-legend">
-    <h2>🗺️ 成熟度圖例（對照七層旅遊 Agent 框架）</h2>
-    <div class="card">
-      <table class="legend-table">
-        <thead><tr><th>Layer</th><th>名稱</th><th>本 Demo 對應階段</th><th>成熟度</th></tr></thead>
-        <tbody>
-          <tr><td>1</td><td>旅遊靈感與目的地探索</td><td>靈感</td><td class="maturity-高">高</td></tr>
-          <tr><td>2</td><td>個人化行程規劃與動態排程</td><td>行程規劃、動態重排</td><td class="maturity-高">高（草稿）／中（重排）</td></tr>
-          <tr><td>3</td><td>搜尋、比價與交易 Agent</td><td>交通、住宿、活動</td><td class="maturity-低">低（僅候選提案）</td></tr>
-          <tr><td>4</td><td>旅途中即時助理與數位禮賓</td><td>行中導覽</td><td class="maturity-中">中</td></tr>
-          <tr><td>5</td><td>異常處理與自動改訂</td><td>動態重排橋段</td><td class="maturity-中">中（分析與提案）／低（跨平台自動改訂）</td></tr>
-          <tr class="not-covered"><td>6</td><td>飯店/航空/旅行社內部營運 Agent</td><td colspan="2">本 demo 為消費端視角，未展示 B2B 供給端能力</td></tr>
-          <tr><td>7</td><td>目的地管理與觀光供給整合</td><td>餐飲、景點、購物</td><td class="maturity-中">中／中高</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
   {% if trip_log.stages.inspiration %}
   <section class="inspiration">
-    <h2><span class="icon">💡</span> 靈感探索 <span class="badge badge-real">真實資料</span> <span class="badge badge-layer">Layer 1 · 高成熟度</span></h2>
+    <h2><span class="icon">💡</span> 靈感探索 <span class="badge badge-real">真實資料</span></h2>
     <div class="insp-grid">
       {% for opt in trip_log.stages.inspiration.destination_options %}
       <div class="card insp-card">
@@ -181,7 +155,7 @@
 
   {% if trip_log.stages.itinerary %}
   <section class="itinerary">
-    <h2><span class="icon">🗓️</span> 已確認行程 <span class="badge badge-layer">Layer 2 · 高成熟度（草稿）</span></h2>
+    <h2><span class="icon">🗓️</span> 已確認行程</h2>
     <div class="card">
       {% for day in trip_log.stages.itinerary.days %}
       <div class="day-title">第 {{ day.day_number }} 天</div>
@@ -213,10 +187,8 @@
       <h2><span class="icon">{{ {"transportation":"🚄","accommodation":"🏨","dining":"🍜","attractions":"🎡","activities":"🎫","shopping":"🛍️"}[key] }}</span> {{ label }}
         {% set any_real = stage.candidates | selectattr("data_source","equalto","real_search") | list | length > 0 %}
         <span class="badge {{ 'badge-real' if any_real else 'badge-sim' }}">{{ '真實資料' if any_real else '模擬資料' }}</span>
-        <span class="badge badge-layer">Layer {{ stage_metadata[key].layer }} · {{ stage_metadata[key].maturity }}</span>
       </h2>
     </div>
-    <div class="stage-note">{{ stage_metadata[key].note }}</div>
     <div class="cand-grid" style="margin-top:.6rem;">
       {% for c in stage.candidates %}
       {% set final_id = stage.confirmation.final_candidate_id if stage.confirmation else stage.agent_selected_candidate_id %}
@@ -253,7 +225,7 @@
 
   {% if trip_log.stages.in_trip_guide %}
   <section class="guide">
-    <h2><span class="icon">🧭</span> 行中導覽 <span class="badge badge-layer">Layer 4 · 中成熟度</span></h2>
+    <h2><span class="icon">🧭</span> 行中導覽</h2>
     {% for sec in trip_log.stages.in_trip_guide.guide_sections %}
     <div class="card">
       <div class="day-title" style="margin-top:0;">第 {{ sec.day_number }} 天</div>
@@ -269,7 +241,7 @@
 
   {% if trip_log.replanning %}
   <section class="replanning">
-    <h2><span class="icon">⚡</span> 突發狀況與動態重新排程 <span class="badge badge-layer">Layer 5 · 中成熟度（分析與提案）</span></h2>
+    <h2><span class="icon">⚡</span> 突發狀況與動態重新排程</h2>
     <div class="card">
       <div style="font-size:.9rem;"><strong>模擬情境</strong>（{{ trip_log.disruption_event.disruption_type }}，第 {{ trip_log.disruption_event.day_number }} 天 {{ trip_log.disruption_event.affected_time_block }}）：{{ trip_log.disruption_event.description }}</div>
       <div class="disruption-diff" style="margin-top:.8rem;">
