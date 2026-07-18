@@ -12,7 +12,10 @@ from schemas import CandidateChatTurn, CandidateStageOutput, ItineraryOutput, su
 
 CATEGORY = "活動"
 VENDOR_HINT = "KKday、Klook 風格的線上活動/體驗平台商品"
-DEEP_LINK_QUERY_HINT = "適合拿去 KKday 搜尋的簡短關鍵字（例如「貓空」「貓空纜車」），會拿去查 KKday 的商品搜尋結果"
+DEEP_LINK_QUERY_HINT = (
+    "適合拿去 KKday 搜尋的簡短關鍵字，反映這個方案的主題（例如「貓空纜車」「貓空 茶園體驗」），"
+    "會拿去查 KKday 的商品搜尋結果，同一輪的 3 個方案應該各自對應自己的活動關鍵字"
+)
 
 
 class ActivitiesAgent(StageAgent):

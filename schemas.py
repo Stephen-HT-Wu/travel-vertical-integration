@@ -147,6 +147,7 @@ class ItineraryChatTurn(BaseModel):
     """One turn of the real-user chat conversation for itinerary planning."""
     reply_message: str
     days: List[ItineraryDay]
+    sources: List[str] = []  # up to 3 real article URLs the first draft was grounded in
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,9 @@ class CandidateOption(BaseModel):
     data_source: Literal["real_search", "simulated"]
     source_url: Optional[str] = None
     source_title: Optional[str] = None
+    deep_link_query: Optional[str] = None  # this candidate's own search text for deep_links.py; never a URL
+    duration: Optional[str] = None  # mainly for transportation, e.g. "約 1 小時 10 分"
+    schedule_note: Optional[str] = None  # mainly for transportation, e.g. "約每小時 1-2 班"
 
 
 class CandidateConfirmation(BaseModel):
@@ -202,12 +206,14 @@ class CandidateStageOutput(BaseModel):
 
 class CandidateChatTurn(BaseModel):
     """One turn of the real-user chat conversation for a transaction-candidate
-    stage (transportation/accommodation/activities)."""
+    stage (transportation/accommodation/activities). deep_link_query now
+    lives per-candidate (see CandidateOption) so the referral for whichever
+    candidate the user actually picks reflects that specific candidate's
+    style/area, not one query shared across all three."""
     reply_message: str
     candidates: List[CandidateOption]
     agent_selected_candidate_id: str
     agent_selection_rationale: str
-    deep_link_query: str  # real-world search text for the stage's deep link (see deep_links.py); never a URL
 
 
 # ---------------------------------------------------------------------------

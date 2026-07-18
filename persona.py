@@ -13,6 +13,7 @@ class Persona(BaseModel):
     age_group: Literal["18-25", "26-35", "36-50", "51+"] = "26-35"
     gender: Literal["male", "female", "unspecified"] = "unspecified"
     home_location: str
+    destination_location: str
     trip_length_type: Literal["half_day", "one_day", "multi_day"] = "one_day"
     days: int = 1
     party_size: int = 1
@@ -25,7 +26,7 @@ class Persona(BaseModel):
         }[self.trip_length_type]
         gender_label = {"male": "男性", "female": "女性", "unspecified": "未指定性別"}[self.gender]
         return (
-            f"{self.age_group} 歲、{gender_label}、從 {self.home_location} 出發、"
+            f"{self.age_group} 歲、{gender_label}、從 {self.home_location} 出發前往 {self.destination_location}、"
             f"{length_label}、{self.party_size} 人同行"
         )
 
@@ -35,6 +36,7 @@ def build_persona_from_args(args: argparse.Namespace) -> Persona:
         age_group=args.age_group,
         gender=args.gender,
         home_location=args.location,
+        destination_location=args.destination,
         trip_length_type=_trip_length_flag_to_type(args.trip_length),
         days=args.days,
         party_size=args.party_size,
@@ -49,6 +51,7 @@ def add_persona_cli_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--age-group", choices=AGE_GROUPS, default="26-35")
     parser.add_argument("--gender", choices=GENDERS, default="unspecified")
     parser.add_argument("--location", required=True, help="Departure / home city, e.g. 台北")
+    parser.add_argument("--destination", required=True, help="Long-distance travel destination, e.g. 礁溪")
     parser.add_argument(
         "--trip-length", choices=["half-day", "one-day", "multi-day"], default="one-day"
     )

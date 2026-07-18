@@ -50,6 +50,7 @@ class RunRequest(BaseModel):
     age_group: str = "26-35"
     gender: str = "unspecified"
     home_location: str = "台北"
+    destination_location: str
     trip_length_type: str = "one_day"
     days: int = 1
     party_size: int = 2
@@ -106,6 +107,7 @@ def get_config():
 def chat_start(req: RunRequest):
     persona = Persona(
         age_group=req.age_group, gender=req.gender, home_location=req.home_location,
+        destination_location=req.destination_location,
         trip_length_type=req.trip_length_type, days=req.days, party_size=req.party_size,
     )
     allowed_domains = []

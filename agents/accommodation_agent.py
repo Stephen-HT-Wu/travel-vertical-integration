@@ -12,7 +12,10 @@ from schemas import CandidateChatTurn, CandidateStageOutput, ItineraryOutput, su
 
 CATEGORY = "住宿"
 VENDOR_HINT = "飯店、民宿、青年旅館等住宿業者"
-DEEP_LINK_QUERY_HINT = "行程所在的城市/區域名稱（例如「台北 文山區」），會拿去查 Booking.com 的住宿搜尋結果，不要填虛構的飯店名稱"
+DEEP_LINK_QUERY_HINT = (
+    "行程所在的城市/區域名稱＋這個方案的風格或價位關鍵字（例如「台北 文山區 平價青旅」「台北 文山區 商務飯店」），"
+    "會拿去查 Booking.com 的住宿搜尋結果，不要填虛構的飯店名稱"
+)
 
 
 def _transport_note(transportation: Optional[CandidateStageOutput]) -> str:

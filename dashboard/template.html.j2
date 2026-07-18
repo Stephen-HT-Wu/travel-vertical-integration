@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>旅遊行程 Dashboard — {{ trip_log.persona.home_location }}</title>
+<title>旅遊行程 Dashboard — {{ trip_log.persona.home_location }} → {{ trip_log.persona.destination_location }}</title>
 <style>
   :root {
     --bg: #f7f7f5;
@@ -122,7 +122,7 @@
 <div class="wrap">
 
   <header class="page-header">
-    <h1>{{ trip_log.persona.home_location }} 出發 — 旅遊行程 Dashboard</h1>
+    <h1>{{ trip_log.persona.home_location }} → {{ trip_log.persona.destination_location }} — 旅遊行程 Dashboard</h1>
     <div class="meta">產生時間：{{ trip_log.created_at }} · 模型：{{ trip_log.run_config.model }} · 搜尋模式：{{ trip_log.run_config.site_mode }}</div>
   </header>
 
@@ -132,6 +132,7 @@
       <div class="item"><div class="label">年齡層</div><div class="value">{{ trip_log.persona.age_group }}</div></div>
       <div class="item"><div class="label">性別</div><div class="value">{{ trip_log.persona.gender }}</div></div>
       <div class="item"><div class="label">出發地</div><div class="value">{{ trip_log.persona.home_location }}</div></div>
+      <div class="item"><div class="label">到達地</div><div class="value">{{ trip_log.persona.destination_location }}</div></div>
       <div class="item"><div class="label">行程長度</div><div class="value">{{ trip_log.persona.trip_length_type }}{% if trip_log.persona.trip_length_type == "multi_day" %}（{{ trip_log.persona.days }} 天）{% endif %}</div></div>
       <div class="item"><div class="label">同行人數</div><div class="value">{{ trip_log.persona.party_size }} 人</div></div>
     </div>
@@ -198,7 +199,8 @@
           <strong>{{ c.name }}</strong>
           <span class="badge {{ 'badge-real' if c.data_source == 'real_search' else 'badge-sim' }}">{{ '真實資料' if c.data_source == 'real_search' else '模擬資料' }}</span>
         </div>
-        <div class="price">{{ c.vendor }} · {{ c.price_range }} · ⭐ {{ c.rating }}</div>
+        <div class="price">{{ c.vendor }} · {{ c.price_range }}{% if c.duration %} · {{ c.duration }}{% endif %} · ⭐ {{ c.rating }}</div>
+        {% if c.schedule_note %}<div style="font-size:.8rem; color:var(--text-muted);">🕐 {{ c.schedule_note }}</div>{% endif %}
         <p style="font-size:.85rem; margin:.4rem 0 0;">{{ c.description }}</p>
         {% if c.highlights %}
         <ul class="highlights">{% for h in c.highlights %}<li>{{ h }}</li>{% endfor %}</ul>

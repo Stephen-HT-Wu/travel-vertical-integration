@@ -111,7 +111,9 @@ class ChatSession:
             call = lambda: agent.chat(self.persona, history, user_message, self.run_config)  # noqa: E731
         elif phase == "itinerary":
             agent = self.itinerary_agent
-            call = lambda: agent.chat(self.persona, history, user_message, self.selected_inspiration)  # noqa: E731
+            call = lambda: agent.chat(  # noqa: E731
+                self.persona, history, user_message, self.selected_inspiration, self.run_config
+            )
         elif phase == "transportation":
             agent = self.transportation_agent
             call = lambda: agent.chat(self.persona, history, user_message, self.trip_log.stages.itinerary)  # noqa: E731
@@ -233,9 +235,14 @@ class ChatSession:
         if stage_output is None or stage_output.confirmation is None:
             raise ValueError(f"{stage_name} 尚未確認候選方案，無法導流")
 
-        turn = self.last_turn.get(stage_name)
-        query = (getattr(turn, "deep_link_query", "") or self.persona.home_location).strip()
         candidate = next(c for c in stage_output.candidates if c.id == stage_output.confirmation.final_candidate_id)
+        if stage_name == "transportation":
+            # The real target is already a known, fixed fact (the persona's
+            # own destination_location) — more reliable than trusting the
+            # model to have echoed it back correctly per-candidate.
+            query = self.persona.destination_location.strip() or self.persona.home_location
+        else:
+            query = (candidate.deep_link_query or "").strip() or self.persona.home_location
 
         deep_link = build_deep_link(
             stage_name, deep_link_query=query, origin=self.persona.home_location, party_size=self.persona.party_size

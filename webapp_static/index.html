@@ -112,7 +112,20 @@
     background: var(--surface); color: var(--text); font-size: .92rem;
   }
   #phase-confirm-row { margin: .6rem 0; display: flex; justify-content: flex-end; }
-  .typing-indicator { font-size: .82rem; color: var(--text-muted); font-style: italic; }
+  .typing-indicator { font-size: .82rem; color: var(--text-muted); max-width: 88%; }
+  .typing-indicator .msg-line { font-style: italic; }
+  .typing-indicator .progress-track {
+    margin-top: .4rem; height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden;
+  }
+  .typing-indicator .progress-bar {
+    height: 100%; width: 35%; border-radius: 999px; background: var(--running);
+    animation: indeterminate 1.1s ease-in-out infinite;
+  }
+  .typing-indicator .waited-text { margin-top: .25rem; font-size: .74rem; font-variant-numeric: tabular-nums; }
+  @keyframes indeterminate {
+    0% { margin-left: -35%; }
+    100% { margin-left: 100%; }
+  }
 
   /* --- referral --- */
   #referral-section .referral-summary { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; }
@@ -176,7 +189,11 @@
           </div>
           <div>
             <label>出發地</label>
-            <input type="text" name="home_location" value="台北">
+            <input type="text" name="home_location" value="台北" required>
+          </div>
+          <div>
+            <label>到達地（目的地）</label>
+            <input type="text" name="destination_location" placeholder="例如：礁溪" required>
           </div>
           <div>
             <label>行程長度</label>
@@ -213,7 +230,6 @@
         </div>
         <div class="actions">
           <button type="submit" class="primary" id="start-btn">開始對話</button>
-          <span class="typing-indicator hidden" id="start-loading">第一次搜尋靈感通常需要 30-90 秒，請稍候…</span>
         </div>
       </form>
     </div>
@@ -316,16 +332,13 @@ function fmtSeconds(ms) { return (ms / 1000).toFixed(1) + "s"; }
 
 let runId = null;
 let phase = "inspiration";
-let startTime = null;
-let elapsedTimer = null;
-let runningTotals = {total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0, total_web_search_requests: 0};
+let runningTotals = {total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0, total_web_search_requests: 0, total_duration_ms: 0};
 
-function tickElapsed() {
-  if (!startTime) return;
-  document.getElementById("stat-elapsed").textContent = ((Date.now() - startTime) / 1000).toFixed(1) + "s";
-}
 function updateTotalsBar(totals) {
   runningTotals = totals;
+  // 經過時間只計每一步 agent 實際處理的時間總和（totals.total_duration_ms），
+  // 不是從畫面打開就開始跑的 wall-clock，所以使用者閱讀/打字的時間不會被計入。
+  document.getElementById("stat-elapsed").textContent = fmtSeconds(totals.total_duration_ms);
   document.getElementById("stat-tokens").textContent = `${totals.total_input_tokens} + ${totals.total_output_tokens}`;
   document.getElementById("stat-cost").textContent = fmtMoney(totals.total_cost_usd);
   document.getElementById("stat-searches").textContent = totals.total_web_search_requests;
@@ -359,13 +372,18 @@ function renderInspirationProposal(options) {
     </div>`).join("");
 }
 
-function renderItineraryProposal(days) {
+function renderItineraryProposal(days, sources) {
   let html = "";
   for (const day of days) {
     html += `<div class="day-title">第 ${day.day_number} 天</div>`;
     for (const b of day.blocks) {
       html += `<div class="day-block"><div class="time">${esc(b.time_block)}</div><div><strong>${esc(b.theme)}</strong> — ${esc(b.location_hint)}</div></div>`;
     }
+  }
+  if (sources && sources.length) {
+    html += `<div class="sub" style="margin-top:.6rem;">📚 參考來源：` +
+      sources.map(u => `<a href="${safeUrl(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join(" · ") +
+      `</div>`;
   }
   return `<div class="proposal-card" style="grid-column:1/-1;">${html}</div>`;
 }
@@ -374,7 +392,8 @@ function renderCandidateProposal(stage, candidates, agentPickId) {
   return candidates.map(c => `
     <div class="proposal-card">
       <div class="name">${esc(c.name)} ${c.id === agentPickId ? '<span class="badge badge-agent-pick">agent 推薦</span>' : ''}</div>
-      <div class="sub">${esc(c.vendor)} · ${esc(c.price_range)} · ⭐${c.rating}</div>
+      <div class="sub">${esc(c.vendor)} · ${esc(c.price_range)}${c.duration ? ' · ' + esc(c.duration) : ''} · ⭐${c.rating}</div>
+      ${c.schedule_note ? `<div class="sub">🕐 ${esc(c.schedule_note)}</div>` : ''}
       <div class="sub">${esc(c.description)}</div>
       <button type="button" class="primary small pick-btn" onclick="pickCandidate('${stage}','${c.id}')">選這個，查看真實報價 ↗</button>
     </div>`).join("");
@@ -393,7 +412,24 @@ async function apiPost(path, body) {
   return resp.json();
 }
 
-function showTyping(show) {
+const EXPECTED_TIME_RANGES = {
+  inspiration: "30-90 秒（真實網路搜尋）",
+  itinerary: "20-70 秒（真實網路搜尋，最多整合 3 篇文章）",
+  transportation: "10-30 秒",
+  accommodation: "10-30 秒",
+  activities: "10-30 秒",
+};
+const THINKING_MESSAGES = {
+  inspiration: "正在搜尋真實旅遊靈感…",
+  itinerary: "正在整合文章、規劃行程…",
+  transportation: "正在設計交通方案…",
+  accommodation: "正在挑選住宿方案…",
+  activities: "正在挑選活動方案…",
+};
+
+let currentCallTimer = null;
+
+function showTyping(show, forPhase) {
   document.getElementById("send-btn").disabled = show;
   let el = document.getElementById("typing-indicator");
   if (show) {
@@ -401,21 +437,35 @@ function showTyping(show) {
       el = document.createElement("div");
       el.id = "typing-indicator";
       el.className = "typing-indicator";
-      el.textContent = "agent 正在回覆…";
       document.getElementById("chat-log").appendChild(el);
     }
-  } else if (el) {
-    el.remove();
+    const msg = THINKING_MESSAGES[forPhase] || "agent 正在處理…";
+    const range = EXPECTED_TIME_RANGES[forPhase] || "10-60 秒";
+    const startedAt = Date.now();
+    const render = () => {
+      const waited = ((Date.now() - startedAt) / 1000).toFixed(0);
+      el.innerHTML = `
+        <div class="msg-line">${esc(msg)}（預期 ${esc(range)}）</div>
+        <div class="progress-track"><div class="progress-bar"></div></div>
+        <div class="waited-text">已等待 ${waited} 秒</div>
+      `;
+    };
+    render();
+    currentCallTimer = setInterval(render, 1000);
+    el.scrollIntoView({behavior: "smooth", block: "end"});
+  } else {
+    if (currentCallTimer) { clearInterval(currentCallTimer); currentCallTimer = null; }
+    if (el) el.remove();
   }
 }
 
 async function sendChatMessage(text) {
-  showTyping(true);
+  showTyping(true, phase);
   try {
     const r = await apiPost(`/api/chat/${runId}/message`, {message: text});
     let proposalHtml = "";
     if (phase === "inspiration") proposalHtml = renderInspirationProposal(r.proposal.destination_options);
-    else if (phase === "itinerary") proposalHtml = renderItineraryProposal(r.proposal.days);
+    else if (phase === "itinerary") proposalHtml = renderItineraryProposal(r.proposal.days, r.proposal.sources);
     else proposalHtml = renderCandidateProposal(phase, r.proposal.candidates, r.proposal.agent_selected_candidate_id);
     appendChatMessage("assistant", r.reply_message, proposalHtml);
     updateTotalsBar(r.totals);
@@ -485,8 +535,20 @@ window.pickCandidate = async function (stage, candidateId) {
 };
 
 function showReferralPanel(stage, referral, blankTab) {
-  if (blankTab) {
-    blankTab.location.href = referral.url;
+  // Always try to land the referral in a NEW tab, never the current one —
+  // a same-tab navigation means the browser's "back" button would tear down
+  // this page's in-progress chat state. blankTab (opened synchronously
+  // before the await, see pickCandidate) is the primary path; if it's
+  // missing or got closed, fall back to a direct window.open() attempt.
+  let opened = false;
+  if (blankTab && !blankTab.closed) {
+    try {
+      blankTab.location.href = referral.url;
+      opened = true;
+    } catch (e) { /* fall through to direct open below */ }
+  }
+  if (!opened) {
+    opened = !!window.open(referral.url, "_blank", "noopener");
   }
   const panel = document.getElementById("referral-section");
   panel.classList.remove("hidden");
@@ -499,7 +561,10 @@ function showReferralPanel(stage, referral, blankTab) {
     </div>
     <div class="referral-note">
       如果新分頁沒有自動開啟，點這裡：<a href="${esc(referral.url)}" target="_blank" rel="noopener">${esc(referral.url)}</a><br>
-      這是真實網站的搜尋結果頁，接下來由你自己在對方網站完成——本 app 不會追蹤或知道你是否有實際預訂。
+      這是根據「${esc(referral.candidate_name)}」的類型、地區與風格，在 ${esc(referral.vendor)} 上查到的真實搜尋結果——
+      因為候選方案是示意用的模擬提案、不是真實房源或商品，搜尋結果不會剛好出現同名選項，
+      但條件（地區/風格/價位）應該相近，實際報價、庫存與能不能訂，請以對方網站顯示的為準。
+      接下來由你自己在對方網站完成——本 app 不會追蹤或知道你是否有實際預訂。
     </div>
   `;
   panel.scrollIntoView({behavior: "smooth", block: "center"});
@@ -513,8 +578,6 @@ function showDemoComplete() {
     `預估花費 ${fmtMoney(runningTotals.total_cost_usd)}`;
   document.getElementById("link-dashboard-complete").href = `/api/chat/${runId}/dashboard`;
   document.getElementById("link-json-complete").href = `/api/chat/${runId}/trip_log.json`;
-  clearInterval(elapsedTimer);
-  tickElapsed();
   document.getElementById("run-status").className = "run-status done";
   document.getElementById("run-status").textContent = "✅ Demo 完成";
 }
@@ -599,14 +662,11 @@ function startTail() {
       updateTotalsBar(event.data.totals);
       phase = "done";
       renderStepper();
-      clearInterval(elapsedTimer);
-      tickElapsed();
       document.getElementById("run-status").className = "run-status done";
       document.getElementById("run-status").textContent = "✅ 全部完成";
       showFinal(event.data.trip_log);
     } else if (event.type === "error") {
       showError(event.data.message);
-      clearInterval(elapsedTimer);
     }
   };
   es.addEventListener("done", () => es.close());
@@ -697,12 +757,12 @@ document.getElementById("persona-form").addEventListener("submit", async (e) => 
   const form = e.target;
   const payload = {
     age_group: form.age_group.value, gender: form.gender.value, home_location: form.home_location.value,
+    destination_location: form.destination_location.value,
     trip_length_type: form.trip_length_type.value, days: parseInt(form.days.value, 10) || 1,
     party_size: parseInt(form.party_size.value, 10) || 1, site_mode: form.site_mode.value, model: form.model.value,
   };
 
   document.getElementById("start-btn").disabled = true;
-  document.getElementById("start-loading").classList.remove("hidden");
 
   try {
     const startResp = await apiPost("/api/chat/start", payload);
@@ -715,14 +775,11 @@ document.getElementById("persona-form").addEventListener("submit", async (e) => 
     document.getElementById("chat-section").classList.remove("hidden");
     renderStepper();
 
-    startTime = Date.now();
-    elapsedTimer = setInterval(tickElapsed, 200);
-
     await sendChatMessage("");
   } catch (e) {
     showError(e.message);
   } finally {
-    document.getElementById("start-loading").classList.add("hidden");
+    document.getElementById("start-btn").disabled = false;
   }
 });
 </script>
