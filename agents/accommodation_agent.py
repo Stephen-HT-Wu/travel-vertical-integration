@@ -1,12 +1,18 @@
 """Layer 3 (simulated) — lodging candidates."""
 from typing import List, Optional, Tuple
 
-from agents.base_agent import StageAgent, chat_candidate_system_prompts, mock_candidate_system_prompt
+from agents.base_agent import (
+    StageAgent,
+    chat_candidate_system_prompts,
+    mock_candidate_system_prompt,
+    validate_candidate_turn,
+)
 from persona import Persona
 from schemas import CandidateChatTurn, CandidateStageOutput, ItineraryOutput, summarize_itinerary
 
 CATEGORY = "住宿"
 VENDOR_HINT = "飯店、民宿、青年旅館等住宿業者"
+DEEP_LINK_QUERY_HINT = "行程所在的城市/區域名稱（例如「台北 文山區」），會拿去查 Booking.com 的住宿搜尋結果，不要填虛構的飯店名稱"
 
 
 def _transport_note(transportation: Optional[CandidateStageOutput]) -> str:
@@ -50,7 +56,7 @@ class AccommodationAgent(StageAgent):
         itinerary: ItineraryOutput,
         transportation: Optional[CandidateStageOutput] = None,
     ) -> Tuple[CandidateChatTurn, List[dict]]:
-        start_system, refine_system = chat_candidate_system_prompts(CATEGORY, VENDOR_HINT)
+        start_system, refine_system = chat_candidate_system_prompts(CATEGORY, VENDOR_HINT, DEEP_LINK_QUERY_HINT)
         if not history:
             user_content = (
                 f"人物設定：{persona.summary_zh()}\n"
@@ -58,5 +64,8 @@ class AccommodationAgent(StageAgent):
                 f"{_transport_note(transportation)}\n\n"
                 f"{user_message or '請提出住宿候選方案。'}"
             )
-            return self.start_chat(start_system, user_content, CandidateChatTurn)
-        return self.continue_chat(refine_system, history, user_message, CandidateChatTurn)
+            turn, new_history = self.start_chat(start_system, user_content, CandidateChatTurn)
+        else:
+            turn, new_history = self.continue_chat(refine_system, history, user_message, CandidateChatTurn)
+        validate_candidate_turn(CATEGORY, turn)
+        return turn, new_history

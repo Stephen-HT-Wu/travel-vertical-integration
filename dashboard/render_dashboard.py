@@ -34,10 +34,15 @@ def render(trip_log: TripLog) -> str:
     candidate_stages = [
         (key, label, getattr(trip_log.stages, key)) for key, label in CANDIDATE_STAGE_LABELS
     ]
+    # chat_transcripts is only ever populated by the chat webapp (chat_session.py) —
+    # the CLI/auto-pipeline never writes it — so its presence reliably tells us
+    # whether hitl_log entries came from a real user or from UserSimulatorAgent.
+    who_label = "使用者" if trip_log.chat_transcripts else "虛擬使用者"
     return template.render(
         trip_log=trip_log,
         stage_metadata=STAGE_METADATA,
         candidate_stages=candidate_stages,
+        who_label=who_label,
     )
 
 

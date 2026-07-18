@@ -4,3 +4,4 @@ __pycache__/
 .env
 output/
 google_oauth_credentials.json
+local_settings.json

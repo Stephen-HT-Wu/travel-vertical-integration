@@ -114,10 +114,11 @@
   #phase-confirm-row { margin: .6rem 0; display: flex; justify-content: flex-end; }
   .typing-indicator { font-size: .82rem; color: var(--text-muted); font-style: italic; }
 
-  /* --- checkout --- */
-  #checkout-panel .order-summary { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; }
-  #checkout-panel .sim-note { font-size: .76rem; color: var(--text-muted); margin-top: .4rem; }
-  .order-success { background: var(--real-bg); color: var(--real); border-radius: 8px; padding: .7rem .85rem; font-size: .88rem; }
+  /* --- referral --- */
+  #referral-section .referral-summary { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  #referral-section .referral-note { font-size: .76rem; color: var(--text-muted); margin-top: .4rem; }
+  #referral-section .referral-note a { color: var(--accent-2); word-break: break-all; }
+  .referral-success { background: var(--real-bg); color: var(--real); border-radius: 8px; padding: .7rem .85rem; font-size: .88rem; }
 
   /* --- tail auto-run steps (reused visual language) --- */
   .step { border-left: 3px solid var(--border); padding-left: .9rem; margin-bottom: .8rem; }
@@ -149,7 +150,7 @@
 <div class="wrap">
   <header class="page-header">
     <h1>旅遊產業垂直整合 Agent Demo</h1>
-    <div class="sub">對話版 — 用聊天完成靈感、行程與交通/住宿/活動選購（含模擬下單），最後可加入你的 Google Calendar</div>
+    <div class="sub" id="header-sub">對話版 — 用聊天完成靈感、行程與交通/住宿/活動選購，並導流到真實網站查看報價</div>
   </header>
 
   <section id="form-section">
@@ -195,10 +196,11 @@
           </div>
           <div>
             <label>搜尋模式</label>
-            <select name="site_mode">
+            <select name="site_mode" id="site-mode-select">
               <option value="unrestricted" selected>不限定網站</option>
               <option value="allowlist">限定可信網域清單</option>
             </select>
+            <div id="site-mode-note" style="font-size:.72rem; color:var(--text-muted); margin-top:.3rem;"></div>
           </div>
           <div>
             <label>模型</label>
@@ -241,8 +243,23 @@
     </div>
   </section>
 
-  <!-- checkout panel -->
-  <section id="checkout-section" class="hidden card" id="checkout-panel"></section>
+  <!-- referral panel (shown right after picking a transportation/accommodation/activities candidate) -->
+  <section id="referral-section" class="hidden card"></section>
+
+  <!-- demo-complete wrap-up: shown instead of the tail when enable_tail_pipeline is off -->
+  <section id="demo-complete-section" class="hidden">
+    <div class="card">
+      <h2 style="font-size:1rem; margin-top:0;">✅ Demo 完成：靈感 → 導流</h2>
+      <p style="font-size:.9rem; color:var(--text-muted);">
+        後續的餐飲/景點/購物/導覽/動態重排/評價，以及 Google Calendar 同步，目前透過本機設定關閉。
+      </p>
+      <div id="demo-complete-totals" style="font-size:.88rem; margin-top:.4rem;"></div>
+    </div>
+    <div class="actions" style="margin-top:.75rem;">
+      <a id="link-dashboard-complete" href="#" target="_blank"><button type="button" class="secondary">查看完整 Dashboard</button></a>
+      <a id="link-json-complete" href="#" target="_blank"><button type="button" class="secondary">下載 trip_log.json</button></a>
+    </div>
+  </section>
 
   <!-- tail auto-run steps -->
   <section id="tail-section" class="hidden">
@@ -253,7 +270,7 @@
   <!-- final actions -->
   <section id="final-section" class="hidden">
     <div id="final-review-card" class="card review-card"></div>
-    <div class="card" id="calendar-panel" style="margin-top:.75rem;">
+    <div class="card hidden" id="calendar-panel" style="margin-top:.75rem;">
       <strong>📅 加入 Google Calendar</strong>
       <div class="date-row">
         <label style="font-size:.82rem; color:var(--text-muted);">行程從哪一天開始？</label>
@@ -272,12 +289,15 @@
 </div>
 
 <script>
-const PHASES = ["inspiration", "itinerary", "transportation", "accommodation", "activities", "tail", "done"];
 const PHASE_LABELS = {
   inspiration: "靈感探索", itinerary: "行程規劃", transportation: "交通", accommodation: "住宿",
   activities: "活動", tail: "餐飲/景點/購物/導覽/重排/評價", done: "完成",
 };
 const CANDIDATE_PHASE_LABELS = { transportation: "交通", accommodation: "住宿", activities: "活動" };
+const CANDIDATE_PHASE_NEXT = { transportation: "accommodation", accommodation: "activities", activities: "tail" };
+
+let CONFIG = { default_inspiration_domains: [], enable_tail_pipeline: true, enable_calendar_sync: true };
+let PHASE_ORDER = ["inspiration", "itinerary", "transportation", "accommodation", "activities", "tail", "done"];
 const TAIL_STAGE_ORDER = ["dining", "attractions", "shopping", "in_trip_guide", "replanning", "review"];
 const TAIL_STAGE_LABELS = {
   dining: "餐飲", attractions: "景點", shopping: "購物", in_trip_guide: "行中導覽",
@@ -313,9 +333,8 @@ function updateTotalsBar(totals) {
 
 function renderStepper() {
   const el = document.getElementById("phase-stepper");
-  const order = ["inspiration", "itinerary", "transportation", "accommodation", "activities", "tail", "done"];
-  const idx = order.indexOf(phase);
-  el.innerHTML = order.map((p, i) => {
+  const idx = PHASE_ORDER.indexOf(phase);
+  el.innerHTML = PHASE_ORDER.map((p, i) => {
     const cls = i < idx ? "past" : (i === idx ? "current" : "");
     return `<span class="step-chip ${cls}">${PHASE_LABELS[p]}</span>`;
   }).join("");
@@ -357,7 +376,7 @@ function renderCandidateProposal(stage, candidates, agentPickId) {
       <div class="name">${esc(c.name)} ${c.id === agentPickId ? '<span class="badge badge-agent-pick">agent 推薦</span>' : ''}</div>
       <div class="sub">${esc(c.vendor)} · ${esc(c.price_range)} · ⭐${c.rating}</div>
       <div class="sub">${esc(c.description)}</div>
-      <button type="button" class="primary small pick-btn" onclick="pickCandidate('${stage}','${c.id}')">選這個，前往訂購</button>
+      <button type="button" class="primary small pick-btn" onclick="pickCandidate('${stage}','${c.id}')">選這個，查看真實報價 ↗</button>
     </div>`).join("");
 }
 
@@ -439,47 +458,65 @@ window.confirmItinerary = async function () {
 };
 
 window.pickCandidate = async function (stage, candidateId) {
+  // Open a blank tab synchronously, inside the click handler, before any
+  // await — some browsers revoke the "user gesture" popup allowance once
+  // execution crosses an await boundary, so window.open() must happen here,
+  // not after the /refer response comes back.
+  const blankTab = window.open("", "_blank");
   try {
-    const r = await apiPost(`/api/chat/${runId}/confirm-candidate`, {stage, candidate_id: candidateId});
+    const r = await apiPost(`/api/chat/${runId}/refer`, {stage, candidate_id: candidateId});
     appendChatMessage("user", `選「${r.candidate.name}」`);
-    showCheckoutPanel(stage, r.candidate);
-  } catch (e) { showError(e.message); }
+    showReferralPanel(stage, r.referral, blankTab);
+    phase = r.next_phase;
+    renderStepper();
+    if (phase === "tail") {
+      document.getElementById("chat-section").classList.add("hidden");
+      startTail();
+    } else if (phase === "done") {
+      document.getElementById("chat-section").classList.add("hidden");
+      showDemoComplete();
+    } else {
+      sendChatMessage("");
+    }
+  } catch (e) {
+    if (blankTab) blankTab.close();
+    showError(e.message);
+  }
 };
 
-function showCheckoutPanel(stage, candidate) {
-  const panel = document.getElementById("checkout-section");
+function showReferralPanel(stage, referral, blankTab) {
+  if (blankTab) {
+    blankTab.location.href = referral.url;
+  }
+  const panel = document.getElementById("referral-section");
   panel.classList.remove("hidden");
   panel.innerHTML = `
-    <div class="order-summary">
+    <div class="referral-summary">
       <div>
-        <strong>🧾 導向 ${esc(CANDIDATE_PHASE_LABELS[stage])} 訂購頁面（模擬）</strong>
-        <div class="sub" style="color:var(--text-muted); font-size:.85rem; margin-top:.3rem;">${esc(candidate.name)} · ${esc(candidate.price_range)}</div>
+        <strong>🔗 已前往 ${esc(referral.vendor)} 查看真實報價與庫存（新分頁）</strong>
+        <div class="sub" style="color:var(--text-muted); font-size:.85rem; margin-top:.3rem;">搜尋內容：${esc(referral.deep_link_query)}</div>
       </div>
-      <button type="button" class="primary" id="place-order-btn">確認送出訂單（模擬）</button>
     </div>
-    <div class="sim-note">這是模擬流程，不會發生真實金流或訂位。</div>
+    <div class="referral-note">
+      如果新分頁沒有自動開啟，點這裡：<a href="${esc(referral.url)}" target="_blank" rel="noopener">${esc(referral.url)}</a><br>
+      這是真實網站的搜尋結果頁，接下來由你自己在對方網站完成——本 app 不會追蹤或知道你是否有實際預訂。
+    </div>
   `;
-  document.getElementById("place-order-btn").onclick = () => placeOrder(stage);
   panel.scrollIntoView({behavior: "smooth", block: "center"});
 }
 
-async function placeOrder(stage) {
-  try {
-    const r = await apiPost(`/api/chat/${runId}/place-order`, {stage});
-    const panel = document.getElementById("checkout-section");
-    panel.innerHTML = `<div class="order-success">✅ 訂單已成立（模擬）— 訂單編號 ${esc(r.order.order_id)}</div>`;
-    setTimeout(() => {
-      panel.classList.add("hidden");
-      phase = r.next_phase;
-      renderStepper();
-      if (phase === "tail") {
-        document.getElementById("chat-section").classList.add("hidden");
-        startTail();
-      } else {
-        sendChatMessage("");
-      }
-    }, 1400);
-  } catch (e) { showError(e.message); }
+function showDemoComplete() {
+  document.getElementById("demo-complete-section").classList.remove("hidden");
+  document.getElementById("demo-complete-totals").innerHTML =
+    `經過時間 ${document.getElementById("stat-elapsed").textContent} · ` +
+    `Tokens ${runningTotals.total_input_tokens} + ${runningTotals.total_output_tokens} · ` +
+    `預估花費 ${fmtMoney(runningTotals.total_cost_usd)}`;
+  document.getElementById("link-dashboard-complete").href = `/api/chat/${runId}/dashboard`;
+  document.getElementById("link-json-complete").href = `/api/chat/${runId}/trip_log.json`;
+  clearInterval(elapsedTimer);
+  tickElapsed();
+  document.getElementById("run-status").className = "run-status done";
+  document.getElementById("run-status").textContent = "✅ Demo 完成";
 }
 
 function showError(msg) {
@@ -588,8 +625,11 @@ function showFinal(tripLog) {
   document.getElementById("link-dashboard").href = `/api/chat/${runId}/dashboard`;
   document.getElementById("link-json").href = `/api/chat/${runId}/trip_log.json`;
 
-  const tomorrow = new Date(Date.now() + 86400000);
-  document.getElementById("calendar-start-date").value = tomorrow.toISOString().slice(0, 10);
+  if (CONFIG.enable_calendar_sync) {
+    document.getElementById("calendar-panel").classList.remove("hidden");
+    const tomorrow = new Date(Date.now() + 86400000);
+    document.getElementById("calendar-start-date").value = tomorrow.toISOString().slice(0, 10);
+  }
 }
 
 document.getElementById("calendar-connect-btn").addEventListener("click", async () => {
@@ -599,14 +639,41 @@ document.getElementById("calendar-connect-btn").addEventListener("click", async 
     const resp = await fetch(`/api/calendar/auth-url?run_id=${runId}&start_date=${startDate}`);
     const data = await resp.json();
     if (data.error) {
-      resultEl.innerHTML = `<div class="sim-note">⚠️ ${esc(data.error)}</div>`;
+      resultEl.innerHTML = `<div style="font-size:.76rem; color:var(--text-muted);">⚠️ ${esc(data.error)}</div>`;
       return;
     }
     window.location.href = data.auth_url;
   } catch (e) {
-    resultEl.innerHTML = `<div class="sim-note">⚠️ 無法建立授權連結：${esc(e.message)}</div>`;
+    resultEl.innerHTML = `<div style="font-size:.76rem; color:var(--text-muted);">⚠️ 無法建立授權連結：${esc(e.message)}</div>`;
   }
 });
+
+// ---- load server config on page load: local inspiration-domain default + feature toggles ----
+async function loadConfig() {
+  try {
+    const resp = await fetch("/api/config");
+    CONFIG = await resp.json();
+  } catch (e) {
+    // keep the built-in CONFIG defaults (unrestricted search, both features on) if this fails
+  }
+
+  if (!CONFIG.enable_tail_pipeline) {
+    PHASE_ORDER = PHASE_ORDER.filter(p => p !== "tail");
+  }
+
+  if (CONFIG.default_inspiration_domains && CONFIG.default_inspiration_domains.length) {
+    const select = document.getElementById("site-mode-select");
+    select.value = "allowlist";
+    document.getElementById("site-mode-note").textContent =
+      `已預設限定：${CONFIG.default_inspiration_domains.join("、")}（本機設定，未進版控）`;
+  }
+
+  if (!CONFIG.enable_tail_pipeline || !CONFIG.enable_calendar_sync) {
+    document.getElementById("header-sub").textContent =
+      "對話版 — 用聊天完成靈感、行程與交通/住宿/活動選購，並導流到真實網站查看報價（本次示範範圍：靈感 → 導流）";
+  }
+}
+loadConfig();
 
 // ---- persona form submit: create session, kick off first inspiration turn ----
 document.getElementById("trip-length-select").addEventListener("change", (e) => {

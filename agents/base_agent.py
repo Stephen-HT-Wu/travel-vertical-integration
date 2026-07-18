@@ -62,15 +62,44 @@ def search_candidate_prompts(category: str, vendor_hint: str) -> "tuple[str, str
 
 _CHAT_CANDIDATE_START_TEMPLATE = """你是一個旅遊產業「{category}」候選方案顧問，正在跟真實旅客對話，角色定位是提出 {vendor_hint} 這類選項。
 
-根據使用者人物設定與已確認的行程，提出恰好 3 個合理、在地合理的候選方案。這些是模擬資料（simulated）——你沒有連接任何真實訂位或付款系統，不能執行真實交易，只負責提案。data_source 固定為 "simulated"，source_url/source_title 留空（null）。從中選一個你認為最適合這個人物設定的，填入 agent_selected_candidate_id，並在 agent_selection_rationale 說明理由。reply_message 用聊天口吻簡短介紹這些方案，邀請使用者選擇其中一個、或提出調整意見（例如想要更便宜/更快/更豪華的選項）。"""
+根據使用者人物設定與已確認的行程，提出恰好 3 個合理、在地合理的候選方案。這些是模擬資料（simulated）——你沒有連接任何真實訂位或付款系統，不能執行真實交易，只負責提案。data_source 固定為 "simulated"，source_url/source_title 留空（null）。從中選一個你認為最適合這個人物設定的，填入 agent_selected_candidate_id，並在 agent_selection_rationale 說明理由。reply_message 用聊天口吻簡短介紹這些方案，邀請使用者選擇其中一個、或提出調整意見（例如想要更便宜/更快/更豪華的選項）。
 
-_CHAT_CANDIDATE_REFINE_TEMPLATE = """你是「{category}」候選方案顧問，根據對話紀錄與使用者最新的訊息調整候選方案（例如換掉某個選項、找更便宜/更快/更符合需求的、或使用者只是在問問題就正常回答並維持方案不變）。data_source 固定為 "simulated"。reply_message 用聊天口吻自然回覆使用者的訊息。"""
+重要：candidates 這個欄位一定要包含 3 個完整填寫的方案（每個都要有真實具體的 name/vendor/price_range/description，不可以是空陣列），而且內容要跟你在 reply_message 裡描述的方案完全對應——不要只把方案寫在 reply_message 裡就把 candidates 留空或用佔位文字帶過。agent_selected_candidate_id 必須是這 3 個 candidates 之一的真實 id，不可以是 "placeholder" 或任何虛構值。
+
+deep_link_query：{deep_link_query_hint}。這段文字之後會被拿去組一個真實網站的搜尋網址，讓使用者可以自己去該網站查看真實報價/庫存——只要填「真實世界看得懂的地名或關鍵字」，不要填任何網址、候選方案的虛構名稱，或 "placeholder" 這類佔位文字。"""
+
+_CHAT_CANDIDATE_REFINE_TEMPLATE = """你是「{category}」候選方案顧問，根據對話紀錄與使用者最新的訊息調整候選方案（例如換掉某個選項、找更便宜/更快/更符合需求的、或使用者只是在問問題就正常回答並維持方案不變）。data_source 固定為 "simulated"。reply_message 用聊天口吻自然回覆使用者的訊息。
+
+重要：candidates 這個欄位一定要包含 3 個完整填寫的方案（不可以是空陣列或佔位文字），agent_selected_candidate_id 必須是這 3 個 candidates 之一的真實 id。
+
+deep_link_query：{deep_link_query_hint}，每次回覆都要重新填寫（若使用者的調整意見影響了地點/關鍵字，記得更新），不可以留空或寫 "placeholder"。"""
 
 
-def chat_candidate_system_prompts(category: str, vendor_hint: str) -> "tuple[str, str]":
-    start = _CHAT_CANDIDATE_START_TEMPLATE.format(category=category, vendor_hint=vendor_hint)
-    refine = _CHAT_CANDIDATE_REFINE_TEMPLATE.format(category=category)
+def chat_candidate_system_prompts(category: str, vendor_hint: str, deep_link_query_hint: str) -> "tuple[str, str]":
+    start = _CHAT_CANDIDATE_START_TEMPLATE.format(
+        category=category, vendor_hint=vendor_hint, deep_link_query_hint=deep_link_query_hint
+    )
+    refine = _CHAT_CANDIDATE_REFINE_TEMPLATE.format(category=category, deep_link_query_hint=deep_link_query_hint)
     return start, refine
+
+
+def validate_candidate_turn(category: str, turn) -> None:
+    """Defense-in-depth against a real, observed failure mode: a structured
+    output that's technically valid JSON but semantically degenerate (e.g.
+    empty candidates list, agent_selected_candidate_id/deep_link_query left
+    as the literal string "placeholder") — the schema constraint alone
+    doesn't stop the model from doing this. Raises a clear, actionable error
+    instead of silently handing the caller unusable data."""
+    if not turn.candidates:
+        raise RuntimeError(f"「{category}」候選方案回傳空陣列，請重新輸入訊息再試一次")
+    candidate_ids = {c.id for c in turn.candidates}
+    if turn.agent_selected_candidate_id not in candidate_ids:
+        raise RuntimeError(
+            f"「{category}」agent_selected_candidate_id ({turn.agent_selected_candidate_id!r}) "
+            f"不在候選方案 id 清單中，請重新輸入訊息再試一次"
+        )
+    if not turn.deep_link_query.strip() or turn.deep_link_query.strip().lower() == "placeholder":
+        raise RuntimeError(f"「{category}」deep_link_query 是空值或佔位文字，請重新輸入訊息再試一次")
 
 
 class StageAgent:

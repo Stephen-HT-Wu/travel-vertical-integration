@@ -1,12 +1,18 @@
 """Layer 3 (simulated) — flight / THSR / TRA style transportation candidates."""
 from typing import List, Tuple
 
-from agents.base_agent import StageAgent, chat_candidate_system_prompts, mock_candidate_system_prompt
+from agents.base_agent import (
+    StageAgent,
+    chat_candidate_system_prompts,
+    mock_candidate_system_prompt,
+    validate_candidate_turn,
+)
 from persona import Persona
 from schemas import CandidateChatTurn, CandidateStageOutput, ItineraryOutput, summarize_itinerary
 
 CATEGORY = "交通"
 VENDOR_HINT = "航空公司、台灣高鐵、台鐵等交通業者的班次"
+DEEP_LINK_QUERY_HINT = "這趟行程實際要去的目的地地名（例如「貓空」「九份」），會拿去查 Google 地圖大眾運輸路線，出發地會自動帶入使用者的 home_location，不用重複填"
 
 
 class TransportationAgent(StageAgent):
@@ -26,12 +32,15 @@ class TransportationAgent(StageAgent):
     def chat(
         self, persona: Persona, history: List[dict], user_message: str, itinerary: ItineraryOutput
     ) -> Tuple[CandidateChatTurn, List[dict]]:
-        start_system, refine_system = chat_candidate_system_prompts(CATEGORY, VENDOR_HINT)
+        start_system, refine_system = chat_candidate_system_prompts(CATEGORY, VENDOR_HINT, DEEP_LINK_QUERY_HINT)
         if not history:
             user_content = (
                 f"人物設定：{persona.summary_zh()}\n出發地：{persona.home_location}\n\n"
                 f"已確認行程：\n{summarize_itinerary(itinerary)}\n\n"
                 f"{user_message or '請提出交通候選方案。'}"
             )
-            return self.start_chat(start_system, user_content, CandidateChatTurn)
-        return self.continue_chat(refine_system, history, user_message, CandidateChatTurn)
+            turn, new_history = self.start_chat(start_system, user_content, CandidateChatTurn)
+        else:
+            turn, new_history = self.continue_chat(refine_system, history, user_message, CandidateChatTurn)
+        validate_candidate_turn(CATEGORY, turn)
+        return turn, new_history

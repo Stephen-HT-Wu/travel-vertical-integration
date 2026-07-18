@@ -16,6 +16,7 @@ CheckpointType = Literal[
     "candidate_confirmation",
     "replanning_confirmation",
     "final_review",
+    "referral",
 ]
 
 
@@ -172,17 +173,21 @@ class CandidateConfirmation(BaseModel):
     feedback: str
 
 
-class SimulatedOrder(BaseModel):
-    """A mocked 'redirected out to book, order confirmed' record. This is
-    always fabricated locally (no LLM call, no real payment/booking system
-    contacted) — order_id is a random token, not a real confirmation number."""
-    order_id: str
+class ReferralEvent(BaseModel):
+    """We referred the user out to a real vendor's real search-results page
+    with real trip context pre-filled — this is NOT a confirmed booking.
+    Whether they actually complete anything there is outside this app's
+    visibility; we only know we opened the link. url is always built
+    deterministically server-side (see deep_links.py), never taken directly
+    from LLM output."""
     stage: str
+    vendor: str
+    url: str
+    deep_link_query: str
     candidate_id: str
     candidate_name: str
-    price_range: str
-    confirmed_at: str
-    is_simulated: bool = True
+    referred_at: str
+    is_referral: bool = True
 
 
 class CandidateStageOutput(BaseModel):
@@ -192,7 +197,7 @@ class CandidateStageOutput(BaseModel):
     agent_selected_candidate_id: str
     agent_selection_rationale: str
     confirmation: Optional[CandidateConfirmation] = None
-    order: Optional[SimulatedOrder] = None
+    referral: Optional[ReferralEvent] = None
 
 
 class CandidateChatTurn(BaseModel):
@@ -202,6 +207,7 @@ class CandidateChatTurn(BaseModel):
     candidates: List[CandidateOption]
     agent_selected_candidate_id: str
     agent_selection_rationale: str
+    deep_link_query: str  # real-world search text for the stage's deep link (see deep_links.py); never a URL
 
 
 # ---------------------------------------------------------------------------

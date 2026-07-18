@@ -171,7 +171,7 @@
       {% endfor %}
       {% if trip_log.stages.itinerary.confirmation %}
       <div class="confirm-line">
-        <span class="who">虛擬使用者：</span>
+        <span class="who">{{ who_label }}：</span>
         {{ "✅ 已確認" if trip_log.stages.itinerary.confirmation.status == "confirmed" else "✏️ 已要求修改後確認" }}
         — {{ trip_log.stages.itinerary.confirmation.feedback }}
       </div>
@@ -211,11 +211,17 @@
       <div style="font-size:.85rem;"><strong>Agent 推薦理由：</strong>{{ stage.agent_selection_rationale }}</div>
       {% if stage.confirmation %}
       <div class="confirm-line">
-        <span class="who">虛擬使用者：</span>
+        <span class="who">{{ who_label }}：</span>
         {% if stage.confirmation.status == "confirmed" %}✅ 確認 agent 的推薦
         {% elif stage.confirmation.status == "swapped" %}🔁 更換為其他候選方案
         {% else %}❌ 婉拒{% endif %}
         — {{ stage.confirmation.feedback }}
+      </div>
+      {% endif %}
+      {% if stage.referral %}
+      <div class="confirm-line">🔗 已導流至 {{ stage.referral.vendor }}
+        （<a href="{{ stage.referral.url }}" target="_blank" rel="noopener">{{ stage.referral.deep_link_query }}</a>）
+        — 使用者自行於對方網站完成，本系統不追蹤後續
       </div>
       {% endif %}
     </div>
@@ -259,7 +265,7 @@
       <div class="notification-box">📱 數位禮賓通知：{{ trip_log.replanning.concierge_notification }}</div>
       {% if trip_log.replanning.confirmation %}
       <div class="confirm-line">
-        <span class="who">虛擬使用者：</span>
+        <span class="who">{{ who_label }}：</span>
         {{ "✅ 接受調整" if trip_log.replanning.confirmation.status == "confirmed" else "❌ 婉拒調整" }}
         — {{ trip_log.replanning.confirmation.feedback }}
       </div>
@@ -291,7 +297,8 @@
   {% endif %}
 
   <footer class="disclaimer">
-    本 dashboard 中，標示「真實資料」的內容（靈感、餐飲、景點、購物）來自真實網路搜尋並附上來源連結；其餘標示「模擬資料」的內容（交通、住宿、活動）皆為 LLM 生成的模擬候選方案，過程中沒有發生任何真實訂位或付款。虛擬使用者的所有確認與評價，皆由獨立的 UserSimulator agent 依人物設定模擬產生。
+    本 dashboard 中，標示「真實資料」的內容（靈感、餐飲、景點、購物）來自真實網路搜尋並附上來源連結；其餘標示「模擬資料」的內容（交通、住宿、活動）皆為 LLM 生成的模擬候選方案。標示「🔗 已導流至」的階段，代表使用者被導向該真實網站自行查看報價/完成後續——本系統不追蹤、也不知道對方是否有實際完成訂購，過程中沒有發生任何真實訂位或付款。
+    {% if trip_log.chat_transcripts %}所有確認與評價皆由使用者本人於對話中做出。{% else %}虛擬使用者的所有確認與評價，皆由獨立的 UserSimulator agent 依人物設定模擬產生。{% endif %}
   </footer>
 
 </div>

@@ -2,10 +2,12 @@
 
 Real multi-turn text chat for inspiration / itinerary / transaction
 candidates (transportation, accommodation, activities), each transaction
-ending in a simulated "redirect out to book -> order confirmed" checkout;
-then automatic hand-off to the existing UserSimulatorAgent-driven tail
-(dining/attractions/shopping/guide/replanning/review); then an optional,
-explicitly user-authorized Google Calendar sync.
+ending in a real deep-link referral to a real vendor's search results (see
+deep_links.py) instead of a simulated order; then — unless disabled via
+local_settings.json — automatic hand-off to the existing
+UserSimulatorAgent-driven tail (dining/attractions/shopping/guide/
+replanning/review); then an optional, explicitly user-authorized Google
+Calendar sync (also toggleable).
 
 Run with: python webapp.py   (then open http://127.0.0.1:8000)
 """
@@ -25,6 +27,7 @@ from pydantic import BaseModel
 import calendar_integration
 from dashboard.render_dashboard import render as render_dashboard_html
 from chat_session import ChatSession
+from local_settings import load_local_settings
 from persona import Persona
 from schemas import CalendarSyncResult, RunConfig, TripLog
 
@@ -36,6 +39,8 @@ BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "webapp_static"
 OUTPUT_DIR = BASE_DIR / "output" / "chat_runs"
 CALENDAR_REDIRECT_URI = "http://127.0.0.1:8000/api/calendar/oauth/callback"
+
+LOCAL_SETTINGS = load_local_settings()
 
 CHAT_SESSIONS: Dict[str, ChatSession] = {}
 TAIL_QUEUES: Dict[str, "queue.Queue"] = {}
@@ -65,10 +70,6 @@ class ConfirmCandidateRequest(BaseModel):
     candidate_id: str
 
 
-class PlaceOrderRequest(BaseModel):
-    stage: str
-
-
 def _get_session(run_id: str) -> ChatSession:
     session = CHAT_SESSIONS.get(run_id)
     if session is None:
@@ -76,9 +77,28 @@ def _get_session(run_id: str) -> ChatSession:
     return session
 
 
+def _require_tail_enabled() -> None:
+    if not LOCAL_SETTINGS.enable_tail_pipeline:
+        raise HTTPException(status_code=403, detail="尾段自動流程（餐飲/景點/購物/導覽/重排/評價）目前透過 local_settings.json 停用")
+
+
+def _require_calendar_enabled() -> None:
+    if not LOCAL_SETTINGS.enable_calendar_sync:
+        raise HTTPException(status_code=403, detail="Google Calendar 同步目前透過 local_settings.json 停用")
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/api/config")
+def get_config():
+    return {
+        "default_inspiration_domains": LOCAL_SETTINGS.default_inspiration_domains,
+        "enable_tail_pipeline": LOCAL_SETTINGS.enable_tail_pipeline,
+        "enable_calendar_sync": LOCAL_SETTINGS.enable_calendar_sync,
+    }
 
 
 # -- chat lifecycle -------------------------------------------------------
@@ -90,13 +110,16 @@ def chat_start(req: RunRequest):
     )
     allowed_domains = []
     if req.site_mode == "allowlist":
-        data = json.loads((BASE_DIR / "config" / "trusted_domains.json").read_text(encoding="utf-8"))
-        allowed_domains = data["domains"]
+        if LOCAL_SETTINGS.default_inspiration_domains:
+            allowed_domains = LOCAL_SETTINGS.default_inspiration_domains
+        else:
+            data = json.loads((BASE_DIR / "config" / "trusted_domains.json").read_text(encoding="utf-8"))
+            allowed_domains = data["domains"]
     run_config = RunConfig(
         site_mode=req.site_mode, allowed_domains=allowed_domains, model=req.model, language="zh-TW"
     )
     run_id = uuid.uuid4().hex[:12]
-    CHAT_SESSIONS[run_id] = ChatSession(run_id, persona, run_config, OUTPUT_DIR / run_id)
+    CHAT_SESSIONS[run_id] = ChatSession(run_id, persona, run_config, OUTPUT_DIR / run_id, local_settings=LOCAL_SETTINGS)
     return {"run_id": run_id}
 
 
@@ -127,20 +150,16 @@ def chat_confirm_itinerary(run_id: str):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@app.post("/api/chat/{run_id}/confirm-candidate")
-def chat_confirm_candidate(run_id: str, req: ConfirmCandidateRequest):
+@app.post("/api/chat/{run_id}/refer")
+def chat_refer(run_id: str, req: ConfirmCandidateRequest):
+    """Confirms the picked candidate and immediately generates its deep-link
+    referral in one round trip, so the frontend's 'pick a candidate' click
+    only needs a single request."""
     session = _get_session(run_id)
     try:
-        return session.confirm_candidate(req.stage, req.candidate_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@app.post("/api/chat/{run_id}/place-order")
-def chat_place_order(run_id: str, req: PlaceOrderRequest):
-    session = _get_session(run_id)
-    try:
-        return session.place_order(req.stage)
+        confirmed = session.confirm_candidate(req.stage, req.candidate_id)
+        referral = session.generate_referral(req.stage)
+        return {**referral, "candidate": confirmed["candidate"]}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -160,6 +179,7 @@ def _execute_tail(run_id: str) -> None:
 
 @app.get("/api/chat/{run_id}/tail-events")
 def chat_tail_events(run_id: str):
+    _require_tail_enabled()
     _get_session(run_id)
     q: "queue.Queue" = queue.Queue()
     TAIL_QUEUES[run_id] = q
@@ -199,6 +219,7 @@ def chat_trip_log_json(run_id: str):
 # without the user completing Google's own consent screen first) ---------
 @app.get("/api/calendar/auth-url")
 def calendar_auth_url(run_id: str, start_date: str):
+    _require_calendar_enabled()
     _get_session(run_id)  # 404s early if the run doesn't exist
     state = json.dumps({"run_id": run_id, "start_date": start_date})
     try:
@@ -210,6 +231,7 @@ def calendar_auth_url(run_id: str, start_date: str):
 
 @app.get("/api/calendar/oauth/callback", response_class=HTMLResponse)
 def calendar_oauth_callback(code: str, state: str):
+    _require_calendar_enabled()
     try:
         parsed_state = json.loads(state)
         run_id = parsed_state["run_id"]

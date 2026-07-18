@@ -1,16 +1,17 @@
 """Real-user multi-turn chat session for the front three layers (inspiration,
-itinerary, transaction candidates), ending each transaction candidate in a
-simulated "redirect out to book -> order confirmed" checkout, then handing
-off to the existing auto-pipeline (orchestrator.run_tail_streaming) for the
-content-recommendation tail (dining/attractions/shopping/guide/replanning/
-review), which stays UserSimulatorAgent-driven exactly as before.
+itinerary, transaction candidates), ending each transaction candidate with a
+real deep-link referral to a real vendor's search results (see deep_links.py)
+instead of pretending a booking happened, then handing off to the existing
+auto-pipeline (orchestrator.run_tail_streaming) for the content-recommendation
+tail (dining/attractions/shopping/guide/replanning/review) — unless disabled
+via local_settings.enable_tail_pipeline, in which case the session ends right
+after the last referral. That tail, when it does run, stays
+UserSimulatorAgent-driven exactly as before.
 
 Unlike the old fully-automatic flow, confirmations here come from an actual
 user action (a button click reaching confirm_inspiration/confirm_itinerary/
 confirm_candidate) — never inferred from free text and never simulated.
 """
-import random
-import string
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,8 @@ from agents.activities_agent import ActivitiesAgent
 from agents.inspiration_agent import InspirationAgent
 from agents.itinerary_agent import ItineraryAgent
 from agents.transportation_agent import TransportationAgent
+from deep_links import build_deep_link
+from local_settings import LocalSettings
 from orchestrator import TripOrchestrator
 from persona import Persona
 from schemas import (
@@ -32,8 +35,8 @@ from schemas import (
     InspirationOutput,
     ItineraryConfirmation,
     ItineraryOutput,
+    ReferralEvent,
     RunConfig,
-    SimulatedOrder,
     StageMetrics,
     TripLog,
     summarize_itinerary,
@@ -47,16 +50,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _generate_order_id() -> str:
-    return "SIM-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
-
-
 class ChatSession:
-    def __init__(self, run_id: str, persona: Persona, run_config: RunConfig, output_dir: Path):
+    def __init__(
+        self,
+        run_id: str,
+        persona: Persona,
+        run_config: RunConfig,
+        output_dir: Path,
+        local_settings: Optional[LocalSettings] = None,
+    ):
         self.run_id = run_id
         self.persona = persona
         self.run_config = run_config
         self.output_dir = output_dir
+        self.local_settings = local_settings or LocalSettings()
         self.phase = "inspiration"  # inspiration -> itinerary -> transportation -> accommodation -> activities -> tail -> done
         self.trip_log = TripLog(run_id=run_id, created_at=_now(), persona=persona, run_config=run_config)
 
@@ -70,6 +77,12 @@ class ChatSession:
         self.transportation_agent = TransportationAgent(model)
         self.accommodation_agent = AccommodationAgent(model)
         self.activities_agent = ActivitiesAgent(model)
+
+    def _next_phase_after(self, stage_name: str) -> str:
+        next_phase = CANDIDATE_PHASE_NEXT[stage_name]
+        if next_phase == "tail" and not self.local_settings.enable_tail_pipeline:
+            return "done"
+        return next_phase
 
     def _save(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -94,33 +107,39 @@ class ChatSession:
         history = self.history.get(phase, [])
 
         if phase == "inspiration":
-            turn, new_history = self.inspiration_agent.chat(self.persona, history, user_message, self.run_config)
             agent = self.inspiration_agent
+            call = lambda: agent.chat(self.persona, history, user_message, self.run_config)  # noqa: E731
         elif phase == "itinerary":
-            turn, new_history = self.itinerary_agent.chat(self.persona, history, user_message, self.selected_inspiration)
             agent = self.itinerary_agent
+            call = lambda: agent.chat(self.persona, history, user_message, self.selected_inspiration)  # noqa: E731
         elif phase == "transportation":
-            turn, new_history = self.transportation_agent.chat(
-                self.persona, history, user_message, self.trip_log.stages.itinerary
-            )
             agent = self.transportation_agent
+            call = lambda: agent.chat(self.persona, history, user_message, self.trip_log.stages.itinerary)  # noqa: E731
         elif phase == "accommodation":
-            turn, new_history = self.accommodation_agent.chat(
+            agent = self.accommodation_agent
+            call = lambda: agent.chat(  # noqa: E731
                 self.persona, history, user_message, self.trip_log.stages.itinerary, self.trip_log.stages.transportation
             )
-            agent = self.accommodation_agent
         elif phase == "activities":
-            turn, new_history = self.activities_agent.chat(
-                self.persona, history, user_message, self.trip_log.stages.itinerary
-            )
             agent = self.activities_agent
+            call = lambda: agent.chat(self.persona, history, user_message, self.trip_log.stages.itinerary)  # noqa: E731
         else:
             raise ValueError(f"send_message is not valid in phase '{phase}'")
 
+        try:
+            turn, new_history = call()
+        finally:
+            # Record metrics for whatever API call happened, even if a
+            # downstream check (e.g. validate_candidate_turn) rejects the
+            # result — the call still cost real tokens and should count
+            # toward the feasibility-assessment totals.
+            if agent.last_call_metrics:
+                stage_metrics = StageMetrics.from_calls(phase, agent.last_call_metrics)
+                self.trip_log.metrics.add_stage(stage_metrics)
+                self._save()
+
         self.history[phase] = new_history
         self.last_turn[phase] = turn
-        stage_metrics = StageMetrics.from_calls(phase, agent.last_call_metrics)
-        self.trip_log.metrics.add_stage(stage_metrics)
         self._record_transcript(phase, user_message, turn.reply_message)
         self._save()
 
@@ -192,7 +211,7 @@ class ChatSession:
             agent_selected_candidate_id=turn.agent_selected_candidate_id,
             agent_selection_rationale=turn.agent_selection_rationale,
             confirmation=CandidateConfirmation(
-                status=status, final_candidate_id=candidate_id, feedback="使用者於對話中選定並前往訂購"
+                status=status, final_candidate_id=candidate_id, feedback="使用者於對話中選定"
             ),
         )
         setattr(self.trip_log.stages, stage_name, stage_output)
@@ -205,33 +224,46 @@ class ChatSession:
             "candidate": candidate.model_dump(mode="json"),
         }
 
-    def place_order(self, stage_name: str) -> dict:
-        """Purely local mock — no LLM call, no real booking/payment system
-        contacted. order_id is a random token, never a real confirmation
-        number. This is the explicit 'redirect out to book -> order
-        confirmed' step the user asked to see, kept honest about being fake."""
+    def generate_referral(self, stage_name: str) -> dict:
+        """Purely local, deterministic — no LLM call, no real booking/payment
+        system contacted. Builds a real deep link to a real vendor's search
+        results (see deep_links.py) and records that we referred the user
+        out; we do not track what happens after they click through."""
         stage_output: Optional[CandidateStageOutput] = getattr(self.trip_log.stages, stage_name, None)
         if stage_output is None or stage_output.confirmation is None:
-            raise ValueError(f"{stage_name} 尚未確認候選方案，無法下單")
+            raise ValueError(f"{stage_name} 尚未確認候選方案，無法導流")
 
+        turn = self.last_turn.get(stage_name)
+        query = (getattr(turn, "deep_link_query", "") or self.persona.home_location).strip()
         candidate = next(c for c in stage_output.candidates if c.id == stage_output.confirmation.final_candidate_id)
-        order = SimulatedOrder(
-            order_id=_generate_order_id(), stage=stage_name, candidate_id=candidate.id,
-            candidate_name=candidate.name, price_range=candidate.price_range, confirmed_at=_now(),
-        )
-        stage_output.order = order
-        setattr(self.trip_log.stages, stage_name, stage_output)
 
-        next_phase = CANDIDATE_PHASE_NEXT[stage_name]
+        deep_link = build_deep_link(
+            stage_name, deep_link_query=query, origin=self.persona.home_location, party_size=self.persona.party_size
+        )
+        referral = ReferralEvent(
+            stage=stage_name, vendor=deep_link.vendor, url=deep_link.url, deep_link_query=query,
+            candidate_id=candidate.id, candidate_name=candidate.name, referred_at=_now(),
+        )
+        stage_output.referral = referral
+        setattr(self.trip_log.stages, stage_name, stage_output)
+        self._log_hitl(
+            stage_name, "referral", f"導流至 {deep_link.vendor}：{query}",
+            "referred", f"使用者前往 {deep_link.vendor} 查看真實報價與庫存",
+        )
+
+        next_phase = self._next_phase_after(stage_name)
         self.phase = next_phase
         self._save()
         return {
-            "type": "order_confirmed", "phase": stage_name,
-            "order": order.model_dump(mode="json"), "next_phase": next_phase,
+            "type": "referral_created", "phase": stage_name,
+            "referral": referral.model_dump(mode="json"), "next_phase": next_phase,
         }
 
     # -- tail handoff ---------------------------------------------------
     def run_tail(self) -> Iterator[dict]:
+        if not self.local_settings.enable_tail_pipeline:
+            self.phase = "done"
+            return
         orchestrator = TripOrchestrator(self.run_config, self.output_dir)
         yield from orchestrator.run_tail_streaming(self.trip_log)
         self.phase = "done"
