@@ -100,7 +100,7 @@ class TripOrchestrator:
             checkpoint_type=checkpoint_type,
             presented_summary=presented_summary,
             decision_status=decision_status,
-            user_simulator_reasoning=reasoning,
+            reasoning=reasoning,
             timestamp=_now(),
         )
         self.trip_log.hitl_log.append(entry)
@@ -357,7 +357,7 @@ def _print_cli_event(event: dict) -> None:
         )
     elif t == "hitl_checkpoint":
         d = event["data"]
-        print(f"  🧑 虛擬使用者：{d['decision_status']} — {d['user_simulator_reasoning']}")
+        print(f"  🧑 虛擬使用者：{d['decision_status']} — {d['reasoning']}")
     elif t == "run_completed":
         tot = event["data"]["totals"]
         print("\n=== 總計（可行性評估用，約略金額，非精確帳單）===")

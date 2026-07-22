@@ -170,6 +170,13 @@
       </div>
       {% endfor %}
       {% endfor %}
+      {% if trip_log.stages.itinerary.sources %}
+      <div class="sub" style="margin-top:.6rem; font-size:.85rem; color:var(--text-muted);">📚 參考來源：
+        {% for s in trip_log.stages.itinerary.sources %}
+        <a href="{{ s.url }}" target="_blank" rel="noopener" style="color:var(--accent-2);">{{ s.title }}</a>{% if not loop.last %} · {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
       {% if trip_log.stages.itinerary.confirmation %}
       <div class="confirm-line">
         <span class="who">{{ who_label }}：</span>

@@ -1,5 +1,10 @@
 {
   "default_inspiration_domains": [],
   "enable_tail_pipeline": true,
-  "enable_calendar_sync": true
+  "enable_calendar_sync": true,
+  "rag_sitemap_url": null,
+  "rag_max_articles": 1000,
+  "rag_top_n": 3,
+  "rag_max_clarifying_questions": 3,
+  "rag_cache_ttl_hours": 24
 }

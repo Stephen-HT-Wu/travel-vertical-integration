@@ -32,7 +32,7 @@ class RunConfig(BaseModel):
 # ---------------------------------------------------------------------------
 class CallMetrics(BaseModel):
     stage: str
-    call_type: Literal["structured", "web_search"]
+    call_type: Literal["structured", "web_search", "web_fetch"]
     model: str
     input_tokens: int
     output_tokens: int
@@ -85,7 +85,7 @@ class HITLLogEntry(BaseModel):
     checkpoint_type: CheckpointType
     presented_summary: str
     decision_status: str
-    user_simulator_reasoning: str
+    reasoning: str
     timestamp: str
 
 
@@ -105,14 +105,6 @@ class InspirationDestinationOption(BaseModel):
 class InspirationOutput(BaseModel):
     destination_options: List[InspirationDestinationOption]
     queries_used: List[str]
-
-
-class InspirationChatTurn(BaseModel):
-    """One turn of the real-user chat conversation for inspiration
-    exploration. reply_message is shown as a chat bubble; destination_options
-    is the current (possibly refined) proposal, redrawn each turn."""
-    reply_message: str
-    destination_options: List[InspirationDestinationOption]
 
 
 # ---------------------------------------------------------------------------
@@ -136,18 +128,58 @@ class ItineraryConfirmation(BaseModel):
     revision_notes: Optional[str] = None
 
 
+class ArticleSource(BaseModel):
+    title: str
+    url: str
+
+
 class ItineraryOutput(BaseModel):
     itinerary_id: str
     days: List[ItineraryDay]
     based_on_inspiration_ids: List[str]
+    sources: List[ArticleSource] = []
     confirmation: Optional[ItineraryConfirmation] = None
 
 
-class ItineraryChatTurn(BaseModel):
-    """One turn of the real-user chat conversation for itinerary planning."""
+# ---------------------------------------------------------------------------
+# Unified planning orchestrator (Layer 1 + Layer 2 merged for the chat flow —
+# understand style intent, then ground the itinerary directly in 1-n RAG-
+# selected or live-searched articles; see agents/planning_agent.py).
+# ---------------------------------------------------------------------------
+class RagSelection(BaseModel):
+    """Plain structured-output call over a cached title list — no embeddings,
+    no tools. The model picks 0-n URLs it judges relevant; selected_urls is
+    re-validated against the real cached URL set by the caller before use."""
+    selected_urls: List[str] = []
+    selection_rationale: str
+
+
+class PlanningDecision(BaseModel):
+    """Does this turn's user_message give enough style/preference signal to
+    proceed to retrieval, or does the orchestrator still need to ask?"""
+    needs_clarification: bool
+    reply_message: str
+    style_summary: str = ""  # only meaningful when needs_clarification is False
+
+
+class PlanningSynthesis(BaseModel):
+    """The actual itinerary-drafting call, grounded in either RAG-fetched or
+    live-searched article content."""
     reply_message: str
     days: List[ItineraryDay]
-    sources: List[str] = []  # up to 3 real article URLs the first draft was grounded in
+    sources: List[ArticleSource] = []
+
+
+class PlanningChatTurn(BaseModel):
+    """Shape returned to the frontend for the merged planning phase.
+    needs_clarification/itinerary_ready are always set deterministically by
+    ChatSession/PlanningAgent in Python — never trusted from a raw model
+    response — so the frontend can safely gate the confirm button on them."""
+    reply_message: str
+    needs_clarification: bool = False
+    itinerary_ready: bool = False
+    days: List[ItineraryDay] = []
+    sources: List[ArticleSource] = []
 
 
 # ---------------------------------------------------------------------------

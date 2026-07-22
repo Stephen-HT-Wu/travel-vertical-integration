@@ -1,6 +1,6 @@
-"""Real-user multi-turn chat session for the front three layers (inspiration,
-itinerary, transaction candidates), ending each transaction candidate with a
-real deep-link referral to a real vendor's search results (see deep_links.py)
+"""Real-user multi-turn chat session for the front layers (unified planning,
+transaction candidates), ending each transaction candidate with a real
+deep-link referral to a real vendor's search results (see deep_links.py)
 instead of pretending a booking happened, then handing off to the existing
 auto-pipeline (orchestrator.run_tail_streaming) for the content-recommendation
 tail (dining/attractions/shopping/guide/replanning/review) — unless disabled
@@ -9,8 +9,16 @@ after the last referral. That tail, when it does run, stays
 UserSimulatorAgent-driven exactly as before.
 
 Unlike the old fully-automatic flow, confirmations here come from an actual
-user action (a button click reaching confirm_inspiration/confirm_itinerary/
-confirm_candidate) — never inferred from free text and never simulated.
+user action (a button click reaching confirm_itinerary/confirm_candidate)
+— never inferred from free text and never simulated.
+
+The "inspiration" and "itinerary" phases used to be separate (pick 1 of 5
+destination-theme cards, then separately draft an itinerary from that pick).
+They're now merged into a single "itinerary" phase driven by
+agents/planning_agent.py's PlanningAgent: understand the user's style
+preference for the trip (asking up to local_settings.rag_max_clarifying_
+questions rounds if unclear), then ground the draft directly in either a
+local RAG title-selection + web_fetch, or a live web_search fallback.
 """
 import uuid
 from datetime import datetime, timezone
@@ -19,8 +27,7 @@ from typing import Dict, Iterator, List, Optional
 
 from agents.accommodation_agent import AccommodationAgent
 from agents.activities_agent import ActivitiesAgent
-from agents.inspiration_agent import InspirationAgent
-from agents.itinerary_agent import ItineraryAgent
+from agents.planning_agent import PlanningAgent
 from agents.transportation_agent import TransportationAgent
 from deep_links import build_deep_link
 from local_settings import LocalSettings
@@ -31,8 +38,6 @@ from schemas import (
     CandidateStageOutput,
     ChatMessage,
     HITLLogEntry,
-    InspirationDestinationOption,
-    InspirationOutput,
     ItineraryConfirmation,
     ItineraryOutput,
     ReferralEvent,
@@ -41,9 +46,9 @@ from schemas import (
     TripLog,
     summarize_itinerary,
 )
+from site_index import SiteIndex
 
 CANDIDATE_PHASE_NEXT = {"transportation": "accommodation", "accommodation": "activities", "activities": "tail"}
-INSPIRATION_TO_TRANSPORT_PHASES = ["inspiration", "itinerary", "transportation", "accommodation", "activities"]
 
 
 def _now() -> str:
@@ -58,22 +63,24 @@ class ChatSession:
         run_config: RunConfig,
         output_dir: Path,
         local_settings: Optional[LocalSettings] = None,
+        site_index: Optional[SiteIndex] = None,
     ):
         self.run_id = run_id
         self.persona = persona
         self.run_config = run_config
         self.output_dir = output_dir
         self.local_settings = local_settings or LocalSettings()
-        self.phase = "inspiration"  # inspiration -> itinerary -> transportation -> accommodation -> activities -> tail -> done
+        self.site_index = site_index
+        self.phase = "itinerary"  # itinerary -> transportation -> accommodation -> activities -> tail -> done
         self.trip_log = TripLog(run_id=run_id, created_at=_now(), persona=persona, run_config=run_config)
 
         self.history: Dict[str, List[dict]] = {}
         self.last_turn: Dict[str, object] = {}
-        self.selected_inspiration: Optional[InspirationDestinationOption] = None
+        self.clarification_rounds = 0
+        self.itinerary_ready = False
 
         model = run_config.model
-        self.inspiration_agent = InspirationAgent(model)
-        self.itinerary_agent = ItineraryAgent(model)
+        self.planning_agent = PlanningAgent(model)
         self.transportation_agent = TransportationAgent(model)
         self.accommodation_agent = AccommodationAgent(model)
         self.activities_agent = ActivitiesAgent(model)
@@ -92,7 +99,7 @@ class ChatSession:
         self.trip_log.hitl_log.append(
             HITLLogEntry(
                 stage=stage, checkpoint_type=checkpoint_type, presented_summary=summary,
-                decision_status=status, user_simulator_reasoning=reasoning, timestamp=_now(),
+                decision_status=status, reasoning=reasoning, timestamp=_now(),
             )
         )
 
@@ -106,14 +113,16 @@ class ChatSession:
         phase = self.phase
         history = self.history.get(phase, [])
 
-        if phase == "inspiration":
-            agent = self.inspiration_agent
-            call = lambda: agent.chat(self.persona, history, user_message, self.run_config)  # noqa: E731
-        elif phase == "itinerary":
-            agent = self.itinerary_agent
-            call = lambda: agent.chat(  # noqa: E731
-                self.persona, history, user_message, self.selected_inspiration, self.run_config
-            )
+        if phase == "itinerary":
+            agent = self.planning_agent
+            if not self.itinerary_ready:
+                call = lambda: agent.start_or_continue(  # noqa: E731
+                    self.persona, history, user_message, self.run_config, self.site_index,
+                    self.local_settings.rag_top_n, self.clarification_rounds,
+                    self.local_settings.rag_max_clarifying_questions,
+                )
+            else:
+                call = lambda: agent.refine(history, user_message)  # noqa: E731
         elif phase == "transportation":
             agent = self.transportation_agent
             call = lambda: agent.chat(self.persona, history, user_message, self.trip_log.stages.itinerary)  # noqa: E731
@@ -140,6 +149,12 @@ class ChatSession:
                 self.trip_log.metrics.add_stage(stage_metrics)
                 self._save()
 
+        if phase == "itinerary" and not self.itinerary_ready:
+            if turn.needs_clarification:
+                self.clarification_rounds += 1
+            else:
+                self.itinerary_ready = True
+
         self.history[phase] = new_history
         self.last_turn[phase] = turn
         self._record_transcript(phase, user_message, turn.reply_message)
@@ -155,35 +170,18 @@ class ChatSession:
         }
 
     # -- confirmations ------------------------------------------------------
-    def confirm_inspiration(self, option_id: str) -> dict:
-        turn = self.last_turn.get("inspiration")
-        if turn is None:
-            raise ValueError("尚未有靈感提案可以確認")
-        option = next((o for o in turn.destination_options if o.id == option_id), None)
-        if option is None:
-            raise ValueError(f"找不到靈感選項 {option_id}")
-
-        self.selected_inspiration = option
-        self.trip_log.stages.inspiration = InspirationOutput(
-            destination_options=turn.destination_options, queries_used=[]
-        )
-        self._log_hitl("inspiration", "candidate_confirmation", option.name, "confirmed", f"使用者選定：{option.name}")
-        self.phase = "itinerary"
-        self._save()
-        return {
-            "type": "phase_advanced", "from_phase": "inspiration", "to_phase": "itinerary",
-            "selection": option.model_dump(mode="json"),
-        }
-
     def confirm_itinerary(self) -> dict:
         turn = self.last_turn.get("itinerary")
         if turn is None:
             raise ValueError("尚未有行程草案可以確認")
+        if not getattr(turn, "itinerary_ready", False):
+            raise ValueError("行程草案還在釐清偏好階段，尚未完成，無法確認")
 
         itinerary = ItineraryOutput(
             itinerary_id=str(uuid.uuid4()),
             days=turn.days,
-            based_on_inspiration_ids=[self.selected_inspiration.id] if self.selected_inspiration else [],
+            based_on_inspiration_ids=[],
+            sources=turn.sources,
             confirmation=ItineraryConfirmation(status="confirmed", feedback="使用者於對話中確認行程"),
         )
         self.trip_log.stages.itinerary = itinerary
@@ -217,9 +215,10 @@ class ChatSession:
             ),
         )
         setattr(self.trip_log.stages, stage_name, stage_output)
-        self._log_hitl(
-            stage_name, "candidate_confirmation", turn.agent_selection_rationale, status, f"使用者選定：{candidate.name}"
-        )
+        # No HITL log entry here on purpose — generate_referral() (always
+        # called right after this, in the same /refer request) logs one
+        # combined entry covering both the selection and the referral, so a
+        # single "選這個" click produces exactly one hitl_log row.
         self._save()
         return {
             "type": "candidate_confirmed", "phase": stage_name,
@@ -254,8 +253,9 @@ class ChatSession:
         stage_output.referral = referral
         setattr(self.trip_log.stages, stage_name, stage_output)
         self._log_hitl(
-            stage_name, "referral", f"導流至 {deep_link.vendor}：{query}",
-            "referred", f"使用者前往 {deep_link.vendor} 查看真實報價與庫存",
+            stage_name, "referral",
+            f"使用者選定「{candidate.name}」（{stage_output.confirmation.status}）後導流至 {deep_link.vendor}：{query}",
+            "referred", f"使用者選定：{candidate.name}；前往 {deep_link.vendor} 查看真實報價與庫存",
         )
 
         next_phase = self._next_phase_after(stage_name)

@@ -163,7 +163,7 @@
 <div class="wrap">
   <header class="page-header">
     <h1>旅遊產業垂直整合 Agent Demo</h1>
-    <div class="sub" id="header-sub">對話版 — 用聊天完成靈感、行程與交通/住宿/活動選購，並導流到真實網站查看報價</div>
+    <div class="sub" id="header-sub">對話版 — 用聊天完成行程規劃與交通/住宿/活動選購，並導流到真實網站查看報價</div>
   </header>
 
   <section id="form-section">
@@ -265,7 +265,7 @@
   <!-- demo-complete wrap-up: shown instead of the tail when enable_tail_pipeline is off -->
   <section id="demo-complete-section" class="hidden">
     <div class="card">
-      <h2 style="font-size:1rem; margin-top:0;">✅ Demo 完成：靈感 → 導流</h2>
+      <h2 style="font-size:1rem; margin-top:0;">✅ Demo 完成：行程規劃 → 導流</h2>
       <p style="font-size:.9rem; color:var(--text-muted);">
         後續的餐飲/景點/購物/導覽/動態重排/評價，以及 Google Calendar 同步，目前透過本機設定關閉。
       </p>
@@ -306,14 +306,14 @@
 
 <script>
 const PHASE_LABELS = {
-  inspiration: "靈感探索", itinerary: "行程規劃", transportation: "交通", accommodation: "住宿",
+  itinerary: "行程規劃", transportation: "交通", accommodation: "住宿",
   activities: "活動", tail: "餐飲/景點/購物/導覽/重排/評價", done: "完成",
 };
 const CANDIDATE_PHASE_LABELS = { transportation: "交通", accommodation: "住宿", activities: "活動" };
 const CANDIDATE_PHASE_NEXT = { transportation: "accommodation", accommodation: "activities", activities: "tail" };
 
-let CONFIG = { default_inspiration_domains: [], enable_tail_pipeline: true, enable_calendar_sync: true };
-let PHASE_ORDER = ["inspiration", "itinerary", "transportation", "accommodation", "activities", "tail", "done"];
+let CONFIG = { default_inspiration_domains: [], enable_tail_pipeline: true, enable_calendar_sync: true, rag_enabled: false };
+let PHASE_ORDER = ["itinerary", "transportation", "accommodation", "activities", "tail", "done"];
 const TAIL_STAGE_ORDER = ["dining", "attractions", "shopping", "in_trip_guide", "replanning", "review"];
 const TAIL_STAGE_LABELS = {
   dining: "餐飲", attractions: "景點", shopping: "購物", in_trip_guide: "行中導覽",
@@ -331,7 +331,8 @@ function fmtMoney(v) { return "$" + Number(v).toFixed(4); }
 function fmtSeconds(ms) { return (ms / 1000).toFixed(1) + "s"; }
 
 let runId = null;
-let phase = "inspiration";
+let phase = "itinerary";
+let itineraryReady = false;
 let runningTotals = {total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0, total_web_search_requests: 0, total_duration_ms: 0};
 
 function updateTotalsBar(totals) {
@@ -362,16 +363,6 @@ function appendChatMessage(role, text, proposalHtml) {
   div.scrollIntoView({behavior: "smooth", block: "end"});
 }
 
-function renderInspirationProposal(options) {
-  return options.map(o => `
-    <div class="proposal-card">
-      <div class="name">${esc(o.name)}</div>
-      <div class="sub">${esc(o.summary)}</div>
-      <a href="${safeUrl(o.source_url)}" target="_blank" rel="noopener">🔗 ${esc(o.source_title)}</a><br>
-      <button type="button" class="primary small pick-btn" onclick="pickInspiration('${o.id}')">就選這個</button>
-    </div>`).join("");
-}
-
 function renderItineraryProposal(days, sources) {
   let html = "";
   for (const day of days) {
@@ -382,7 +373,7 @@ function renderItineraryProposal(days, sources) {
   }
   if (sources && sources.length) {
     html += `<div class="sub" style="margin-top:.6rem;">📚 參考來源：` +
-      sources.map(u => `<a href="${safeUrl(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join(" · ") +
+      sources.map(s => `<a href="${safeUrl(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>`).join(" · ") +
       `</div>`;
   }
   return `<div class="proposal-card" style="grid-column:1/-1;">${html}</div>`;
@@ -413,15 +404,13 @@ async function apiPost(path, body) {
 }
 
 const EXPECTED_TIME_RANGES = {
-  inspiration: "30-90 秒（真實網路搜尋）",
-  itinerary: "20-70 秒（真實網路搜尋，最多整合 3 篇文章）",
+  itinerary: "5-70 秒（依是否需要先釐清風格偏好而定，確定後才會檢索/搜尋文章並整合行程）",
   transportation: "10-30 秒",
   accommodation: "10-30 秒",
   activities: "10-30 秒",
 };
 const THINKING_MESSAGES = {
-  inspiration: "正在搜尋真實旅遊靈感…",
-  itinerary: "正在整合文章、規劃行程…",
+  itinerary: "正在了解你的行程偏好／整合行程資料…",
   transportation: "正在設計交通方案…",
   accommodation: "正在挑選住宿方案…",
   activities: "正在挑選活動方案…",
@@ -464,9 +453,12 @@ async function sendChatMessage(text) {
   try {
     const r = await apiPost(`/api/chat/${runId}/message`, {message: text});
     let proposalHtml = "";
-    if (phase === "inspiration") proposalHtml = renderInspirationProposal(r.proposal.destination_options);
-    else if (phase === "itinerary") proposalHtml = renderItineraryProposal(r.proposal.days, r.proposal.sources);
-    else proposalHtml = renderCandidateProposal(phase, r.proposal.candidates, r.proposal.agent_selected_candidate_id);
+    if (phase === "itinerary") {
+      itineraryReady = !!r.proposal.itinerary_ready;
+      if (itineraryReady) proposalHtml = renderItineraryProposal(r.proposal.days, r.proposal.sources);
+    } else {
+      proposalHtml = renderCandidateProposal(phase, r.proposal.candidates, r.proposal.agent_selected_candidate_id);
+    }
     appendChatMessage("assistant", r.reply_message, proposalHtml);
     updateTotalsBar(r.totals);
     updatePhaseConfirmRowForCurrentPhase();
@@ -478,23 +470,12 @@ async function sendChatMessage(text) {
 }
 
 function updatePhaseConfirmRowForCurrentPhase() {
-  if (phase === "itinerary") {
+  if (phase === "itinerary" && itineraryReady) {
     setPhaseConfirmRow(`<button type="button" class="primary" onclick="confirmItinerary()">行程確定了，下一步</button>`);
   } else {
     setPhaseConfirmRow("");
   }
 }
-
-window.pickInspiration = async function (optionId) {
-  try {
-    const r = await apiPost(`/api/chat/${runId}/confirm-inspiration`, {option_id: optionId});
-    appendChatMessage("user", `就選「${r.selection.name}」`);
-    phase = "itinerary";
-    renderStepper();
-    setPhaseConfirmRow("");
-    await sendChatMessage("");
-  } catch (e) { showError(e.message); }
-};
 
 window.confirmItinerary = async function () {
   try {
@@ -730,7 +711,7 @@ async function loadConfig() {
 
   if (!CONFIG.enable_tail_pipeline || !CONFIG.enable_calendar_sync) {
     document.getElementById("header-sub").textContent =
-      "對話版 — 用聊天完成靈感、行程與交通/住宿/活動選購，並導流到真實網站查看報價（本次示範範圍：靈感 → 導流）";
+      "對話版 — 用聊天完成行程規劃與交通/住宿/活動選購，並導流到真實網站查看報價（本次示範範圍：行程規劃 → 導流）";
   }
 }
 loadConfig();
@@ -773,6 +754,8 @@ document.getElementById("persona-form").addEventListener("submit", async (e) => 
     document.getElementById("run-status").classList.remove("hidden");
     document.getElementById("phase-stepper-section").classList.remove("hidden");
     document.getElementById("chat-section").classList.remove("hidden");
+    phase = "itinerary";
+    itineraryReady = false;
     renderStepper();
 
     await sendChatMessage("");

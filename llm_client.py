@@ -12,6 +12,12 @@ Two entry points, matching the two ways stages call the model:
   their two-call pattern. Returns the raw response so its content blocks
   (including encrypted_content for search results) can be replayed back
   into the follow-up structured call.
+- call_with_web_fetch(): same shape, but with the `web_fetch` server tool —
+  used by the planning orchestrator to pull the full text of 1-n already-
+  known article URLs (chosen ahead of time by a local title-index lookup)
+  instead of running a fresh web_search. The web_fetch tool can only fetch
+  URLs that already appear in the conversation, so callers must embed the
+  target URLs as plain text in user_content.
 
 No booking/payment tool is defined anywhere in this module or the codebase.
 
@@ -119,4 +125,39 @@ def call_with_web_search(
     )
     duration_ms = (time.monotonic() - start) * 1000
     metrics = _build_metrics("web_search", model, response.usage, duration_ms)
+    return response, metrics
+
+
+def call_with_web_fetch(
+    model: str,
+    system: str,
+    user_content: str,
+    allowed_domains: Optional[List[str]] = None,
+    max_uses: int = 3,
+    max_tokens: int = 4000,
+    max_content_tokens: int = 8000,
+) -> Tuple[anthropic.types.Message, CallMetrics]:
+    """Fetches the full text of specific known URLs (see module docstring).
+    Uses the basic web_fetch_20250910 variant — no beta header required, and
+    unlike the dynamic-filtering _20260209+ variants it works on every model
+    this project offers, including claude-haiku-4-5."""
+    tool: dict = {
+        "type": "web_fetch_20250910",
+        "name": "web_fetch",
+        "max_uses": max_uses,
+        "citations": {"enabled": True},
+        "max_content_tokens": max_content_tokens,
+    }
+    if allowed_domains:
+        tool["allowed_domains"] = allowed_domains
+    start = time.monotonic()
+    response = get_client().messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=system,
+        tools=[tool],
+        messages=[{"role": "user", "content": user_content}],
+    )
+    duration_ms = (time.monotonic() - start) * 1000
+    metrics = _build_metrics("web_fetch", model, response.usage, duration_ms)
     return response, metrics

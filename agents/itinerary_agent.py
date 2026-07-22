@@ -1,17 +1,18 @@
 """Layer 2 — itinerary drafting, plus the dynamic-replanning bridge
-(Layer 2 dynamic scheduling + Layer 5 exception handling)."""
-from typing import List, Optional, Tuple
+(Layer 2 dynamic scheduling + Layer 5 exception handling).
+
+Only .run()/generate_disruption()/replan() are used now — all by the CLI/
+auto-pipeline path (orchestrator.py). The chat/webapp flow's itinerary
+drafting moved to agents/planning_agent.py's unified orchestrator."""
+from typing import Optional
 
 from agents.base_agent import StageAgent
 from persona import Persona
 from schemas import (
     DisruptionEvent,
-    InspirationDestinationOption,
     InspirationOutput,
-    ItineraryChatTurn,
     ItineraryOutput,
     ReplanningOutput,
-    RunConfig,
     StageResults,
     summarize_itinerary,
     summarize_stage_results,
@@ -32,14 +33,6 @@ DISRUPTION_SYSTEM = """你是一位情境模擬 agent。根據已確認的行程
 REPLAN_SYSTEM = """你是一位行程規劃 agent，現在需要因應一個行中突發狀況（disruption_event）重新安排受影響那一天的行程。
 
 只調整受影響當天（day_number 與 disruption_event 相同）的行程，其餘時段盡量維持原樣，只在必要時微調銜接。revised_day 是調整後的完整當日行程。change_summary 用人類看得懂的話說明「改了什麼、為什麼」。concierge_notification 模擬一則「數位禮賓」會發給旅客的簡短通知訊息（例如：偵測到狀況、已經怎麼調整、需不需要旅客確認）。"""
-
-CHAT_START_RESEARCH_SYSTEM = """你是一位行程規劃顧問，正在跟真實旅客對話。使用者已經選定了一個靈感主題，你的任務是使用 web_search 工具，針對這個主題與使用者的人物設定，搜尋最多 3 篇真實、時效性高、來源可信的文章，取得規劃具體行程所需的細節（例如景點順序、交通銜接、營業時間、當地建議路線、體驗心得），作為之後撰寫具體行程的依據。不需要超過 3 篇不同文章。"""
-
-CHAT_START_SYNTH_SYSTEM = """根據上一輪最多 3 篇真實文章的搜尋結果，並參考使用者選定的靈感主題，規劃一份具體的、分時段的行程。
-
-天數與步調要符合 trip_length_type（half_day/one_day/multi_day，multi_day 對應 days 天數）與 party_size。每一天用數個 time_block（例如 "09:00-10:30"）劃分，每個時段填入 theme、location_hint、notes，內容應該整合上述文章中的實際資訊（不只是靈感主題的簡短摘要）。sources 欄位填入你實際參考過的文章網址（最多 3 個，必須是搜尋結果中真實存在的網址，不可捏造；沒有明確參考到的文章就不要列入）。reply_message 用聊天口吻簡短介紹這份草案的安排邏輯與參考來源，邀請使用者提出調整意見或確認。"""
-
-CHAT_REFINE_SYSTEM = """你是一位行程規劃顧問，根據對話紀錄與使用者最新的訊息調整行程。只調整使用者提到的部分，其餘時段盡量維持不變（除非改動會牽動銜接的時段）。reply_message 用聊天口吻回覆調整了什麼，或回答使用者的問題。"""
 
 
 class ItineraryAgent(StageAgent):
@@ -92,29 +85,3 @@ class ItineraryAgent(StageAgent):
             "請重新安排受影響當天的行程。"
         )
         return self.run_mock(REPLAN_SYSTEM, user_content, ReplanningOutput)
-
-    def chat(
-        self,
-        persona: Persona,
-        history: List[dict],
-        user_message: str,
-        inspiration_choice: InspirationDestinationOption,
-        run_config: RunConfig,
-    ) -> Tuple[ItineraryChatTurn, List[dict]]:
-        """First turn (history empty) grounds the draft in up to 3 real
-        articles via web_search (see base_agent.start_search_chat); later
-        turns refine within that same conversation without re-searching."""
-        if not history:
-            user_content = (
-                f"人物設定：{persona.summary_zh()}\n"
-                f"trip_length_type={persona.trip_length_type}, days={persona.days}, "
-                f"party_size={persona.party_size}\n\n"
-                f"使用者選定的靈感：{inspiration_choice.name}：{inspiration_choice.summary}"
-                f"（來源：{inspiration_choice.source_url}）\n\n"
-                f"{user_message or '請幫我規劃行程。'}"
-            )
-            return self.start_search_chat(
-                CHAT_START_RESEARCH_SYSTEM, CHAT_START_SYNTH_SYSTEM, user_content, ItineraryChatTurn,
-                run_config, max_uses=3,
-            )
-        return self.continue_chat(CHAT_REFINE_SYSTEM, history, user_message, ItineraryChatTurn)

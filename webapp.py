@@ -1,7 +1,8 @@
 """Interactive local web demo — chat-driven front end.
 
-Real multi-turn text chat for inspiration / itinerary / transaction
-candidates (transportation, accommodation, activities), each transaction
+Real multi-turn text chat for the unified planning phase (style intent ->
+RAG-selected or live-searched itinerary) and transaction candidates
+(transportation, accommodation, activities), each transaction
 ending in a real deep-link referral to a real vendor's search results (see
 deep_links.py) instead of a simulated order; then — unless disabled via
 local_settings.json — automatic hand-off to the existing
@@ -25,6 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 import calendar_integration
+import site_index
 from dashboard.render_dashboard import render as render_dashboard_html
 from chat_session import ChatSession
 from local_settings import load_local_settings
@@ -41,6 +43,11 @@ OUTPUT_DIR = BASE_DIR / "output" / "chat_runs"
 CALENDAR_REDIRECT_URI = "http://127.0.0.1:8000/api/calendar/oauth/callback"
 
 LOCAL_SETTINGS = load_local_settings()
+# Built once at startup (not per-request/session). If rag_sitemap_url isn't
+# set this is a fast no-op (None); if the on-disk cache is missing or stale
+# this blocks startup while it builds — run build_rag_index.py ahead of time
+# to avoid a slow first launch.
+SITE_INDEX = site_index.ensure_index(LOCAL_SETTINGS)
 
 CHAT_SESSIONS: Dict[str, ChatSession] = {}
 TAIL_QUEUES: Dict[str, "queue.Queue"] = {}
@@ -60,10 +67,6 @@ class RunRequest(BaseModel):
 
 class MessageRequest(BaseModel):
     message: str = ""
-
-
-class ConfirmInspirationRequest(BaseModel):
-    option_id: str
 
 
 class ConfirmCandidateRequest(BaseModel):
@@ -99,6 +102,7 @@ def get_config():
         "default_inspiration_domains": LOCAL_SETTINGS.default_inspiration_domains,
         "enable_tail_pipeline": LOCAL_SETTINGS.enable_tail_pipeline,
         "enable_calendar_sync": LOCAL_SETTINGS.enable_calendar_sync,
+        "rag_enabled": SITE_INDEX is not None,
     }
 
 
@@ -121,7 +125,10 @@ def chat_start(req: RunRequest):
         site_mode=req.site_mode, allowed_domains=allowed_domains, model=req.model, language="zh-TW"
     )
     run_id = uuid.uuid4().hex[:12]
-    CHAT_SESSIONS[run_id] = ChatSession(run_id, persona, run_config, OUTPUT_DIR / run_id, local_settings=LOCAL_SETTINGS)
+    CHAT_SESSIONS[run_id] = ChatSession(
+        run_id, persona, run_config, OUTPUT_DIR / run_id,
+        local_settings=LOCAL_SETTINGS, site_index=SITE_INDEX,
+    )
     return {"run_id": run_id}
 
 
@@ -130,15 +137,6 @@ def chat_message(run_id: str, req: MessageRequest):
     session = _get_session(run_id)
     try:
         return session.send_message(req.message)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@app.post("/api/chat/{run_id}/confirm-inspiration")
-def chat_confirm_inspiration(run_id: str, req: ConfirmInspirationRequest):
-    session = _get_session(run_id)
-    try:
-        return session.confirm_inspiration(req.option_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
 

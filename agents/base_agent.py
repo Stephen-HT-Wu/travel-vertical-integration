@@ -24,8 +24,8 @@ from typing import List, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
-from llm_client import call_structured, call_with_web_search
-from schemas import CallMetrics, RunConfig
+from llm_client import call_structured, call_with_web_fetch, call_with_web_search
+from schemas import ArticleSource, CallMetrics, RunConfig
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -92,6 +92,28 @@ def chat_candidate_system_prompts(
         category=category, deep_link_query_hint=deep_link_query_hint, extra_field_hint=extra_field_hint,
     )
     return start, refine
+
+
+def extract_fetched_sources(response) -> "List[ArticleSource]":
+    """Pulls ground-truth (title, url) pairs straight from a web_fetch
+    response's tool-result blocks, so callers don't have to trust the
+    synthesis call's own copy of the title — it comes from the real fetched
+    page. Skips error results (e.g. url_not_accessible) silently; the
+    synthesis call still sees those in its replayed history and can react
+    in reply_message if it wants to."""
+    sources: List[ArticleSource] = []
+    for block in getattr(response, "content", []):
+        if getattr(block, "type", None) != "web_fetch_tool_result":
+            continue
+        result = getattr(block, "content", None)
+        if getattr(result, "type", None) != "web_fetch_result":
+            continue
+        doc = getattr(result, "content", None)
+        title = getattr(doc, "title", None) or getattr(result, "url", None)
+        url = getattr(result, "url", None)
+        if title and url:
+            sources.append(ArticleSource(title=title, url=url))
+    return sources
 
 
 def validate_candidate_turn(category: str, turn) -> None:
@@ -258,6 +280,49 @@ class StageAgent:
             {"role": "assistant", "content": output.model_dump_json()},
         ]
         return output, history
+
+    def start_fetch_chat(
+        self,
+        fetch_system_prompt: str,
+        synth_system_prompt: str,
+        user_content: str,
+        output_format: Type[T],
+        run_config: RunConfig,
+        max_tokens: int = 4000,
+        synth_max_tokens: int = 8000,
+        max_uses: int = 3,
+    ) -> "tuple[T, List[dict], List[ArticleSource]]":
+        """Like start_search_chat, but grounds the first turn in web_fetch
+        (specific known URLs) instead of web_search (open-ended query).
+        Caller MUST embed the target URLs as plain text in user_content —
+        web_fetch can only fetch URLs already present in the conversation.
+        Also returns the ground-truth (title, url) pairs extracted straight
+        from the fetch results, for callers that don't want to trust the
+        synthesis call's own copy of the title (see extract_fetched_sources)."""
+        self.last_call_metrics = []
+        allowed_domains: Optional[List[str]] = (
+            run_config.allowed_domains if run_config.site_mode == "allowlist" else None
+        )
+        fetch_response, fetch_metrics = call_with_web_fetch(
+            model=self.model, system=fetch_system_prompt, user_content=user_content,
+            allowed_domains=allowed_domains, max_tokens=max_tokens, max_uses=max_uses,
+        )
+        self.last_call_metrics.append(self._tag(fetch_metrics))
+        fetched_sources = extract_fetched_sources(fetch_response)
+        history = [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": fetch_response.content},
+        ]
+        output, synth_metrics = call_structured(
+            model=self.model, system=synth_system_prompt, user_content=SYNTH_INSTRUCTION,
+            output_format=output_format, extra_messages=history, max_tokens=synth_max_tokens,
+        )
+        self.last_call_metrics.append(self._tag(synth_metrics))
+        history = history + [
+            {"role": "user", "content": SYNTH_INSTRUCTION},
+            {"role": "assistant", "content": output.model_dump_json()},
+        ]
+        return output, history, fetched_sources
 
     def continue_chat(
         self, system_prompt: str, history: List[dict], user_message: str, output_format: Type[T], max_tokens: int = 4096
