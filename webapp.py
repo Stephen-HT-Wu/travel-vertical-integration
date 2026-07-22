@@ -1,14 +1,13 @@
 """Interactive local web demo — chat-driven front end.
 
-Real multi-turn text chat for the unified planning phase (style intent ->
-RAG-selected or live-searched itinerary) and transaction candidates
-(transportation, accommodation, activities), each transaction
-ending in a real deep-link referral to a real vendor's search results (see
-deep_links.py) instead of a simulated order; then — unless disabled via
-local_settings.json — automatic hand-off to the existing
-UserSimulatorAgent-driven tail (dining/attractions/shopping/guide/
-replanning/review); then an optional, explicitly user-authorized Google
-Calendar sync (also toggleable).
+Real multi-turn text chat for the unified planning phase: free-text trip
+intake -> clarification (if needed) -> two complete, real (not simulated)
+trip plan options, each bundling itinerary + transportation + accommodation
+(if overnight) + activities with real vendor deep links (see deep_links.py).
+Once the user picks one, unless disabled via local_settings.json ->
+automatic hand-off to the existing UserSimulatorAgent-driven tail
+(dining/attractions/shopping/guide/replanning/review); then an optional,
+explicitly user-authorized Google Calendar sync (also toggleable).
 
 Run with: python webapp.py   (then open http://127.0.0.1:8000)
 """
@@ -30,7 +29,6 @@ import site_index
 from dashboard.render_dashboard import render as render_dashboard_html
 from chat_session import ChatSession
 from local_settings import load_local_settings
-from persona import Persona
 from schemas import CalendarSyncResult, RunConfig, TripLog
 
 load_dotenv()
@@ -54,13 +52,7 @@ TAIL_QUEUES: Dict[str, "queue.Queue"] = {}
 
 
 class RunRequest(BaseModel):
-    age_group: str = "26-35"
-    gender: str = "unspecified"
-    home_location: str = "台北"
-    destination_location: str
-    trip_length_type: str = "one_day"
-    days: int = 1
-    party_size: int = 2
+    intake_text: str = ""
     site_mode: str = "unrestricted"
     model: str = "claude-opus-4-8"
 
@@ -69,9 +61,8 @@ class MessageRequest(BaseModel):
     message: str = ""
 
 
-class ConfirmCandidateRequest(BaseModel):
-    stage: str
-    candidate_id: str
+class SelectPlanRequest(BaseModel):
+    option_id: str
 
 
 def _get_session(run_id: str) -> ChatSession:
@@ -109,11 +100,6 @@ def get_config():
 # -- chat lifecycle -------------------------------------------------------
 @app.post("/api/chat/start")
 def chat_start(req: RunRequest):
-    persona = Persona(
-        age_group=req.age_group, gender=req.gender, home_location=req.home_location,
-        destination_location=req.destination_location,
-        trip_length_type=req.trip_length_type, days=req.days, party_size=req.party_size,
-    )
     allowed_domains = []
     if req.site_mode == "allowlist":
         if LOCAL_SETTINGS.default_inspiration_domains:
@@ -125,11 +111,16 @@ def chat_start(req: RunRequest):
         site_mode=req.site_mode, allowed_domains=allowed_domains, model=req.model, language="zh-TW"
     )
     run_id = uuid.uuid4().hex[:12]
-    CHAT_SESSIONS[run_id] = ChatSession(
-        run_id, persona, run_config, OUTPUT_DIR / run_id,
+    session = ChatSession(
+        run_id, run_config, OUTPUT_DIR / run_id,
         local_settings=LOCAL_SETTINGS, site_index=SITE_INDEX,
     )
-    return {"run_id": run_id}
+    CHAT_SESSIONS[run_id] = session
+    try:
+        first_turn = session.send_message(req.intake_text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"run_id": run_id, **first_turn}
 
 
 @app.post("/api/chat/{run_id}/message")
@@ -141,25 +132,11 @@ def chat_message(run_id: str, req: MessageRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@app.post("/api/chat/{run_id}/confirm-itinerary")
-def chat_confirm_itinerary(run_id: str):
+@app.post("/api/chat/{run_id}/select-plan")
+def chat_select_plan(run_id: str, req: SelectPlanRequest):
     session = _get_session(run_id)
     try:
-        return session.confirm_itinerary()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@app.post("/api/chat/{run_id}/refer")
-def chat_refer(run_id: str, req: ConfirmCandidateRequest):
-    """Confirms the picked candidate and immediately generates its deep-link
-    referral in one round trip, so the frontend's 'pick a candidate' click
-    only needs a single request."""
-    session = _get_session(run_id)
-    try:
-        confirmed = session.confirm_candidate(req.stage, req.candidate_id)
-        referral = session.generate_referral(req.stage)
-        return {**referral, "candidate": confirmed["candidate"]}
+        return session.select_plan(req.option_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
 

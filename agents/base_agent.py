@@ -324,6 +324,71 @@ class StageAgent:
         ]
         return output, history, fetched_sources
 
+    def start_dual_ground_chat(
+        self,
+        fetch_system_prompt: Optional[str],
+        fetch_user_content: Optional[str],
+        search_system_prompt: str,
+        search_user_content: str,
+        synth_system_prompt: str,
+        synth_user_content: str,
+        output_format: Type[T],
+        run_config: RunConfig,
+        fetch_max_uses: int = 3,
+        search_max_uses: int = 6,
+        max_tokens: int = 4000,
+        synth_max_tokens: int = 10000,
+    ) -> "tuple[T, List[dict], List[ArticleSource]]":
+        """Grounds one synthesis call in TWO independent research passes: an
+        optional web_fetch over specific known URLs (the RAG-selected primary
+        articles), followed by a web_search pass (real transportation/
+        accommodation/activities facts). Each tool call is made independently
+        — llm_client's call_with_web_fetch/call_with_web_search signatures
+        are untouched — and their results are stitched into one history list
+        here, exactly like start_fetch_chat/start_search_chat already do
+        internally. Pass fetch_system_prompt=None to skip the fetch step
+        entirely (the RAG-miss path)."""
+        self.last_call_metrics = []
+        allowed_domains: Optional[List[str]] = (
+            run_config.allowed_domains if run_config.site_mode == "allowlist" else None
+        )
+
+        fetched_sources: List[ArticleSource] = []
+        fetch_history: List[dict] = []
+        if fetch_system_prompt is not None:
+            fetch_response, fetch_metrics = call_with_web_fetch(
+                model=self.model, system=fetch_system_prompt, user_content=fetch_user_content,
+                allowed_domains=allowed_domains, max_tokens=max_tokens, max_uses=fetch_max_uses,
+            )
+            self.last_call_metrics.append(self._tag(fetch_metrics))
+            fetched_sources = extract_fetched_sources(fetch_response)
+            fetch_history = [
+                {"role": "user", "content": fetch_user_content},
+                {"role": "assistant", "content": fetch_response.content},
+            ]
+
+        search_response, search_metrics = call_with_web_search(
+            model=self.model, system=search_system_prompt, user_content=search_user_content,
+            allowed_domains=allowed_domains, max_tokens=max_tokens, max_uses=search_max_uses,
+        )
+        self.last_call_metrics.append(self._tag(search_metrics))
+        search_history = [
+            {"role": "user", "content": search_user_content},
+            {"role": "assistant", "content": search_response.content},
+        ]
+
+        combined_history = fetch_history + search_history
+        output, synth_metrics = call_structured(
+            model=self.model, system=synth_system_prompt, user_content=synth_user_content,
+            output_format=output_format, extra_messages=combined_history, max_tokens=synth_max_tokens,
+        )
+        self.last_call_metrics.append(self._tag(synth_metrics))
+        full_history = combined_history + [
+            {"role": "user", "content": synth_user_content},
+            {"role": "assistant", "content": output.model_dump_json()},
+        ]
+        return output, full_history, fetched_sources
+
     def continue_chat(
         self, system_prompt: str, history: List[dict], user_message: str, output_format: Type[T], max_tokens: int = 4096
     ) -> "tuple[T, List[dict]]":

@@ -1,35 +1,31 @@
-"""Real-user multi-turn chat session for the front layers (unified planning,
-transaction candidates), ending each transaction candidate with a real
-deep-link referral to a real vendor's search results (see deep_links.py)
-instead of pretending a booking happened, then handing off to the existing
-auto-pipeline (orchestrator.run_tail_streaming) for the content-recommendation
-tail (dining/attractions/shopping/guide/replanning/review) — unless disabled
-via local_settings.enable_tail_pipeline, in which case the session ends right
-after the last referral. That tail, when it does run, stays
-UserSimulatorAgent-driven exactly as before.
+"""Real-user multi-turn chat session for the unified planning phase, ending
+with the user picking one of two complete, real (not simulated) trip plan
+options — each bundling itinerary + transportation + accommodation (if
+overnight) + activities, all with real vendor deep links (see deep_links.py)
+— instead of separate per-stage confirm+referral steps. Then hands off to
+the existing auto-pipeline (orchestrator.run_tail_streaming) for the
+content-recommendation tail (dining/attractions/shopping/guide/replanning/
+review) — unless disabled via local_settings.enable_tail_pipeline, in which
+case the session ends right after the plan pick. That tail, when it does
+run, stays UserSimulatorAgent-driven exactly as before.
 
-Unlike the old fully-automatic flow, confirmations here come from an actual
-user action (a button click reaching confirm_itinerary/confirm_candidate)
-— never inferred from free text and never simulated.
+Persona is no longer collected via a structured form: the session starts
+with a placeholder Persona and PlanningAgent.generate_plan_bundle() resolves
+the real one from the user's free-text description (see
+agents/planning_agent.py's IntakeDecision), reusing the same clarification-
+round mechanism that used to handle style intent alone.
 
-The "inspiration" and "itinerary" phases used to be separate (pick 1 of 5
-destination-theme cards, then separately draft an itinerary from that pick).
-They're now merged into a single "itinerary" phase driven by
-agents/planning_agent.py's PlanningAgent: understand the user's style
-preference for the trip (asking up to local_settings.rag_max_clarifying_
-questions rounds if unclear), then ground the draft directly in either a
-local RAG title-selection + web_fetch, or a live web_search fallback.
+Unlike the old fully-automatic flow, the plan pick here comes from an actual
+user action (a button click reaching select_plan) — never inferred from
+free text and never simulated.
 """
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
-from agents.accommodation_agent import AccommodationAgent
-from agents.activities_agent import ActivitiesAgent
+import deep_links
 from agents.planning_agent import PlanningAgent
-from agents.transportation_agent import TransportationAgent
-from deep_links import build_deep_link
 from local_settings import LocalSettings
 from orchestrator import TripOrchestrator
 from persona import Persona
@@ -44,11 +40,9 @@ from schemas import (
     RunConfig,
     StageMetrics,
     TripLog,
-    summarize_itinerary,
+    TripPlanBundleRecord,
 )
 from site_index import SiteIndex
-
-CANDIDATE_PHASE_NEXT = {"transportation": "accommodation", "accommodation": "activities", "activities": "tail"}
 
 
 def _now() -> str:
@@ -59,37 +53,33 @@ class ChatSession:
     def __init__(
         self,
         run_id: str,
-        persona: Persona,
         run_config: RunConfig,
         output_dir: Path,
         local_settings: Optional[LocalSettings] = None,
         site_index: Optional[SiteIndex] = None,
     ):
         self.run_id = run_id
-        self.persona = persona
+        # Placeholder — overwritten by PlanningAgent.generate_plan_bundle()'s
+        # resolved_persona as soon as the free-text intake resolves. Both
+        # required str fields, so an empty Persona() alone would fail
+        # validation; empty strings are valid placeholders.
+        self.persona = Persona(home_location="", destination_location="")
         self.run_config = run_config
         self.output_dir = output_dir
         self.local_settings = local_settings or LocalSettings()
         self.site_index = site_index
-        self.phase = "itinerary"  # itinerary -> transportation -> accommodation -> activities -> tail -> done
-        self.trip_log = TripLog(run_id=run_id, created_at=_now(), persona=persona, run_config=run_config)
+        self.phase = "itinerary"  # itinerary -> tail -> done
+        self.trip_log = TripLog(run_id=run_id, created_at=_now(), persona=self.persona, run_config=run_config)
 
         self.history: Dict[str, List[dict]] = {}
         self.last_turn: Dict[str, object] = {}
         self.clarification_rounds = 0
-        self.itinerary_ready = False
+        self.plan_ready = False
 
-        model = run_config.model
-        self.planning_agent = PlanningAgent(model)
-        self.transportation_agent = TransportationAgent(model)
-        self.accommodation_agent = AccommodationAgent(model)
-        self.activities_agent = ActivitiesAgent(model)
+        self.planning_agent = PlanningAgent(run_config.model)
 
-    def _next_phase_after(self, stage_name: str) -> str:
-        next_phase = CANDIDATE_PHASE_NEXT[stage_name]
-        if next_phase == "tail" and not self.local_settings.enable_tail_pipeline:
-            return "done"
-        return next_phase
+    def _next_after_plan_pick(self) -> str:
+        return "tail" if self.local_settings.enable_tail_pipeline else "done"
 
     def _save(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -111,49 +101,50 @@ class ChatSession:
     # -- chat turns -------------------------------------------------------
     def send_message(self, user_message: str) -> dict:
         phase = self.phase
+        if phase != "itinerary":
+            raise ValueError(f"send_message is not valid in phase '{phase}'")
         history = self.history.get(phase, [])
 
-        if phase == "itinerary":
-            agent = self.planning_agent
-            if not self.itinerary_ready:
-                call = lambda: agent.start_or_continue(  # noqa: E731
-                    self.persona, history, user_message, self.run_config, self.site_index,
-                    self.local_settings.rag_top_n, self.clarification_rounds,
-                    self.local_settings.rag_max_clarifying_questions,
-                )
-            else:
-                call = lambda: agent.refine(history, user_message)  # noqa: E731
-        elif phase == "transportation":
-            agent = self.transportation_agent
-            call = lambda: agent.chat(self.persona, history, user_message, self.trip_log.stages.itinerary)  # noqa: E731
-        elif phase == "accommodation":
-            agent = self.accommodation_agent
-            call = lambda: agent.chat(  # noqa: E731
-                self.persona, history, user_message, self.trip_log.stages.itinerary, self.trip_log.stages.transportation
+        agent = self.planning_agent
+        if not self.plan_ready:
+            call = lambda: agent.generate_plan_bundle(  # noqa: E731
+                self.persona, history, user_message, self.run_config, self.site_index,
+                self.local_settings.rag_top_n, self.clarification_rounds,
+                self.local_settings.rag_max_clarifying_questions,
             )
-        elif phase == "activities":
-            agent = self.activities_agent
-            call = lambda: agent.chat(self.persona, history, user_message, self.trip_log.stages.itinerary)  # noqa: E731
         else:
-            raise ValueError(f"send_message is not valid in phase '{phase}'")
+            call = lambda: agent.refine_bundle(history, user_message)  # noqa: E731
 
         try:
-            turn, new_history = call()
+            turn, new_history, resolved_persona = call()
         finally:
             # Record metrics for whatever API call happened, even if a
-            # downstream check (e.g. validate_candidate_turn) rejects the
-            # result — the call still cost real tokens and should count
-            # toward the feasibility-assessment totals.
+            # downstream check rejects the result — the call still cost
+            # real tokens and should count toward the feasibility-
+            # assessment totals.
             if agent.last_call_metrics:
                 stage_metrics = StageMetrics.from_calls(phase, agent.last_call_metrics)
                 self.trip_log.metrics.add_stage(stage_metrics)
                 self._save()
 
-        if phase == "itinerary" and not self.itinerary_ready:
+        if resolved_persona is not None:
+            self.persona = resolved_persona
+            self.trip_log.persona = resolved_persona  # dashboard/tail/calendar all read trip_log.persona directly
+
+        if not self.plan_ready:
             if turn.needs_clarification:
                 self.clarification_rounds += 1
             else:
-                self.itinerary_ready = True
+                self.plan_ready = True
+
+        if turn.plan_ready:
+            # Overwritten on every ready turn (including refinements) so the
+            # bundle available to select_plan() always reflects the latest
+            # edits, not just the first draft.
+            self.trip_log.plan_bundle = TripPlanBundleRecord(
+                reply_message=turn.reply_message, options=turn.options,
+                agent_recommended_option_id=turn.agent_recommended_option_id,
+            )
 
         self.history[phase] = new_history
         self.last_turn[phase] = turn
@@ -169,101 +160,124 @@ class ChatSession:
             "totals": self.trip_log.metrics.model_dump(),
         }
 
-    # -- confirmations ------------------------------------------------------
-    def confirm_itinerary(self) -> dict:
-        turn = self.last_turn.get("itinerary")
-        if turn is None:
-            raise ValueError("尚未有行程草案可以確認")
-        if not getattr(turn, "itinerary_ready", False):
-            raise ValueError("行程草案還在釐清偏好階段，尚未完成，無法確認")
+    # -- plan selection ---------------------------------------------------
+    def select_plan(self, option_id: str) -> dict:
+        """Purely local, deterministic — no LLM call. Writes the chosen
+        TripPlanOption's data into the existing stages.itinerary/
+        transportation/accommodation/activities shapes (unchanged from
+        before this pivot) so orchestrator.run_tail_streaming/
+        calendar_integration/dashboard all keep working without knowing
+        about the two-option bundle. Builds real vendor deep links (see
+        deep_links.py) for every real transportation/accommodation/activity
+        candidate the option carries, and records exactly one HITL entry
+        for the whole pick — replacing what used to be up to 7 entries
+        (1 itinerary confirm + 3x(candidate confirm + referral))."""
+        bundle = self.trip_log.plan_bundle
+        if bundle is None or not self.plan_ready:
+            raise ValueError("尚未有完整方案可以選擇")
+        option = next((o for o in bundle.options if o.option_id == option_id), None)
+        if option is None:
+            raise ValueError(f"找不到方案 {option_id}")
 
         itinerary = ItineraryOutput(
             itinerary_id=str(uuid.uuid4()),
-            days=turn.days,
+            days=option.days,
             based_on_inspiration_ids=[],
-            sources=turn.sources,
-            confirmation=ItineraryConfirmation(status="confirmed", feedback="使用者於對話中確認行程"),
-        )
-        self.trip_log.stages.itinerary = itinerary
-        self._log_hitl(
-            "itinerary", "itinerary_confirmation", summarize_itinerary(itinerary), "confirmed", "使用者於對話中確認行程"
-        )
-        self.phase = "transportation"
-        self._save()
-        return {
-            "type": "phase_advanced", "from_phase": "itinerary", "to_phase": "transportation",
-            "itinerary": itinerary.model_dump(mode="json"),
-        }
-
-    def confirm_candidate(self, stage_name: str, candidate_id: str) -> dict:
-        if stage_name not in CANDIDATE_PHASE_NEXT:
-            raise ValueError(f"'{stage_name}' 不是可對話確認的交易候選階段")
-        turn = self.last_turn.get(stage_name)
-        if turn is None:
-            raise ValueError(f"尚未有 {stage_name} 候選方案可以確認")
-        candidate = next((c for c in turn.candidates if c.id == candidate_id), None)
-        if candidate is None:
-            raise ValueError(f"找不到候選方案 {candidate_id}")
-
-        status = "confirmed" if candidate_id == turn.agent_selected_candidate_id else "swapped"
-        stage_output = CandidateStageOutput(
-            candidates=turn.candidates,
-            agent_selected_candidate_id=turn.agent_selected_candidate_id,
-            agent_selection_rationale=turn.agent_selection_rationale,
-            confirmation=CandidateConfirmation(
-                status=status, final_candidate_id=candidate_id, feedback="使用者於對話中選定"
+            sources=option.primary_sources + option.corroboration_sources,
+            confirmation=ItineraryConfirmation(
+                status="confirmed", feedback=f"使用者選擇方案 {option.label}：{option.why_recommended}"
             ),
         )
-        setattr(self.trip_log.stages, stage_name, stage_output)
-        # No HITL log entry here on purpose — generate_referral() (always
-        # called right after this, in the same /refer request) logs one
-        # combined entry covering both the selection and the referral, so a
-        # single "選這個" click produces exactly one hitl_log row.
-        self._save()
-        return {
-            "type": "candidate_confirmed", "phase": stage_name,
-            "candidate": candidate.model_dump(mode="json"),
-        }
+        self.trip_log.stages.itinerary = itinerary
 
-    def generate_referral(self, stage_name: str) -> dict:
-        """Purely local, deterministic — no LLM call, no real booking/payment
-        system contacted. Builds a real deep link to a real vendor's search
-        results (see deep_links.py) and records that we referred the user
-        out; we do not track what happens after they click through."""
-        stage_output: Optional[CandidateStageOutput] = getattr(self.trip_log.stages, stage_name, None)
-        if stage_output is None or stage_output.confirmation is None:
-            raise ValueError(f"{stage_name} 尚未確認候選方案，無法導流")
+        summary_parts: List[str] = []
+        stage_referrals: Dict[str, List[dict]] = {}
 
-        candidate = next(c for c in stage_output.candidates if c.id == stage_output.confirmation.final_candidate_id)
-        if stage_name == "transportation":
-            # The real target is already a known, fixed fact (the persona's
-            # own destination_location) — more reliable than trusting the
-            # model to have echoed it back correctly per-candidate.
-            query = self.persona.destination_location.strip() or self.persona.home_location
-        else:
-            query = (candidate.deep_link_query or "").strip() or self.persona.home_location
+        if option.transportation:
+            candidate = option.transportation[0]
+            link = deep_links.build_transportation_link(
+                self.persona.home_location, self.persona.destination_location
+            )
+            referral = ReferralEvent(
+                stage="transportation", vendor=link.vendor, url=link.url,
+                deep_link_query=self.persona.destination_location, candidate_id=candidate.id,
+                candidate_name=candidate.name, referred_at=_now(),
+            )
+            self.trip_log.stages.transportation = CandidateStageOutput(
+                candidates=option.transportation,
+                agent_selected_candidate_id=candidate.id,
+                agent_selection_rationale="使用者選擇了包含此交通建議的整體行程方案",
+                confirmation=CandidateConfirmation(
+                    status="confirmed", final_candidate_id=candidate.id, feedback="使用者選擇了包含此方案的整體行程"
+                ),
+                referral=referral, referrals=[referral],
+            )
+            stage_referrals["transportation"] = [referral.model_dump(mode="json")]
+            summary_parts.append(f"交通：{candidate.name}")
 
-        deep_link = build_deep_link(
-            stage_name, deep_link_query=query, origin=self.persona.home_location, party_size=self.persona.party_size
-        )
-        referral = ReferralEvent(
-            stage=stage_name, vendor=deep_link.vendor, url=deep_link.url, deep_link_query=query,
-            candidate_id=candidate.id, candidate_name=candidate.name, referred_at=_now(),
-        )
-        stage_output.referral = referral
-        setattr(self.trip_log.stages, stage_name, stage_output)
+        if option.accommodation:
+            candidate = option.accommodation[0]
+            real_name = (candidate.deep_link_query or candidate.name).strip()
+            links = deep_links.build_accommodation_links(real_name, self.persona.party_size)
+            referrals = [
+                ReferralEvent(
+                    stage="accommodation", vendor=link.vendor, url=link.url, deep_link_query=real_name,
+                    candidate_id=candidate.id, candidate_name=candidate.name, referred_at=_now(),
+                )
+                for link in links
+            ]
+            self.trip_log.stages.accommodation = CandidateStageOutput(
+                candidates=option.accommodation,
+                agent_selected_candidate_id=candidate.id,
+                agent_selection_rationale="使用者選擇了包含此住宿建議的整體行程方案",
+                confirmation=CandidateConfirmation(
+                    status="confirmed", final_candidate_id=candidate.id, feedback="使用者選擇了包含此方案的整體行程"
+                ),
+                referral=referrals[0], referrals=referrals,
+            )
+            stage_referrals["accommodation"] = [r.model_dump(mode="json") for r in referrals]
+            summary_parts.append(f"住宿：{candidate.name}")
+
+        if option.activities:
+            referrals = []
+            for candidate in option.activities:
+                real_name = (candidate.deep_link_query or candidate.name).strip()
+                link = deep_links.build_activities_link(real_name)
+                referrals.append(
+                    ReferralEvent(
+                        stage="activities", vendor=link.vendor, url=link.url, deep_link_query=real_name,
+                        candidate_id=candidate.id, candidate_name=candidate.name, referred_at=_now(),
+                    )
+                )
+            self.trip_log.stages.activities = CandidateStageOutput(
+                candidates=option.activities,
+                agent_selected_candidate_id=option.activities[0].id,
+                agent_selection_rationale="使用者選擇了包含這些活動建議的整體行程方案",
+                confirmation=CandidateConfirmation(
+                    status="confirmed", final_candidate_id=option.activities[0].id, feedback="使用者選擇了包含此方案的整體行程"
+                ),
+                referral=referrals[0], referrals=referrals,
+            )
+            stage_referrals["activities"] = [r.model_dump(mode="json") for r in referrals]
+            summary_parts.append("活動：" + "、".join(c.name for c in option.activities))
+
+        bundle.selected_option_id = option_id
+        bundle.selected_at = _now()
+
+        total_links = sum(len(v) for v in stage_referrals.values())
         self._log_hitl(
-            stage_name, "referral",
-            f"使用者選定「{candidate.name}」（{stage_output.confirmation.status}）後導流至 {deep_link.vendor}：{query}",
-            "referred", f"使用者選定：{candidate.name}；前往 {deep_link.vendor} 查看真實報價與庫存",
+            "itinerary", "plan_selection",
+            f"方案 {option.label}：{option.why_recommended}" + ("｜" + "｜".join(summary_parts) if summary_parts else ""),
+            "confirmed" if option_id == bundle.agent_recommended_option_id else "swapped",
+            f"使用者選擇方案 {option.label}，共產生 {total_links} 個真實 vendor 導流連結",
         )
 
-        next_phase = self._next_phase_after(stage_name)
+        next_phase = self._next_after_plan_pick()
         self.phase = next_phase
         self._save()
         return {
-            "type": "referral_created", "phase": stage_name,
-            "referral": referral.model_dump(mode="json"), "next_phase": next_phase,
+            "type": "plan_selected", "option": option.model_dump(mode="json"),
+            "referrals": stage_referrals, "next_phase": next_phase,
         }
 
     # -- tail handoff ---------------------------------------------------

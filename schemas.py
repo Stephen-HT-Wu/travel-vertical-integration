@@ -17,6 +17,7 @@ CheckpointType = Literal[
     "replanning_confirmation",
     "final_review",
     "referral",
+    "plan_selection",
 ]
 
 
@@ -115,6 +116,9 @@ class ItineraryBlock(BaseModel):
     theme: str
     location_hint: str
     notes: str
+    source_url: Optional[str] = None
+    source_title: Optional[str] = None
+    citation_quote: Optional[str] = None
 
 
 class ItineraryDay(BaseModel):
@@ -154,32 +158,25 @@ class RagSelection(BaseModel):
     selection_rationale: str
 
 
-class PlanningDecision(BaseModel):
-    """Does this turn's user_message give enough style/preference signal to
-    proceed to retrieval, or does the orchestrator still need to ask?"""
+class IntakeDecision(BaseModel):
+    """One structured call that both extracts Persona fields from the user's
+    free-text trip description AND judges whether style/preference signal is
+    strong enough to proceed. Reuses the same round_number/max_rounds
+    clarification loop the old style-only PlanningDecision used — this is not
+    a second, separate ask-loop. Each round re-emits the FULL cumulative
+    best-understanding of every field (not just what's new this turn), since
+    continue_chat replays the whole conversation history anyway."""
     needs_clarification: bool
     reply_message: str
-    style_summary: str = ""  # only meaningful when needs_clarification is False
-
-
-class PlanningSynthesis(BaseModel):
-    """The actual itinerary-drafting call, grounded in either RAG-fetched or
-    live-searched article content."""
-    reply_message: str
-    days: List[ItineraryDay]
-    sources: List[ArticleSource] = []
-
-
-class PlanningChatTurn(BaseModel):
-    """Shape returned to the frontend for the merged planning phase.
-    needs_clarification/itinerary_ready are always set deterministically by
-    ChatSession/PlanningAgent in Python — never trusted from a raw model
-    response — so the frontend can safely gate the confirm button on them."""
-    reply_message: str
-    needs_clarification: bool = False
-    itinerary_ready: bool = False
-    days: List[ItineraryDay] = []
-    sources: List[ArticleSource] = []
+    style_summary: str = ""
+    home_location: Optional[str] = None
+    destination_location: Optional[str] = None
+    age_group: Optional[Literal["18-25", "26-35", "36-50", "51+"]] = None
+    gender: Optional[Literal["male", "female", "unspecified"]] = None
+    trip_length_type: Optional[Literal["half_day", "one_day", "multi_day"]] = None
+    days: Optional[int] = None
+    party_size: Optional[int] = None
+    companion_notes: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +231,7 @@ class CandidateStageOutput(BaseModel):
     agent_selection_rationale: str
     confirmation: Optional[CandidateConfirmation] = None
     referral: Optional[ReferralEvent] = None
+    referrals: List[ReferralEvent] = []
 
 
 class CandidateChatTurn(BaseModel):
@@ -246,6 +244,54 @@ class CandidateChatTurn(BaseModel):
     candidates: List[CandidateOption]
     agent_selected_candidate_id: str
     agent_selection_rationale: str
+
+
+# ---------------------------------------------------------------------------
+# Two-option full-trip plan bundle (chat flow only). Each TripPlanOption is a
+# complete package — itinerary + real transportation/accommodation/activities
+# — not a bare itinerary variant. Defined after CandidateOption/ReferralEvent
+# since it embeds real CandidateOption lists directly.
+# ---------------------------------------------------------------------------
+class TripPlanOption(BaseModel):
+    option_id: str
+    label: Literal["A", "B"]
+    is_agent_recommended: bool
+    why_recommended: str
+    days: List[ItineraryDay]
+    transportation: List[CandidateOption] = []
+    accommodation: List[CandidateOption] = []
+    activities: List[CandidateOption] = []
+    primary_sources: List[ArticleSource] = []
+    corroboration_sources: List[ArticleSource] = []
+
+
+class PlanBundleSynthesis(BaseModel):
+    """Raw structured-output shape of the two-option synthesis call."""
+    reply_message: str
+    options: List[TripPlanOption]
+    agent_recommended_option_id: str
+
+
+class PlanBundleTurn(BaseModel):
+    """Shape returned to the frontend. needs_clarification/plan_ready are
+    always set deterministically by ChatSession/PlanningAgent in Python —
+    never trusted from a raw model response."""
+    reply_message: str
+    needs_clarification: bool = False
+    plan_ready: bool = False
+    options: List[TripPlanOption] = []
+    agent_recommended_option_id: str = ""
+
+
+class TripPlanBundleRecord(BaseModel):
+    """Persisted on TripLog: the full two-option proposal, kept for audit/
+    dashboard even after a pick. selected_option_id/selected_at are filled
+    in by ChatSession.select_plan()."""
+    reply_message: str
+    options: List[TripPlanOption]
+    agent_recommended_option_id: str
+    selected_option_id: Optional[str] = None
+    selected_at: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +385,7 @@ class TripLog(BaseModel):
     persona: Persona
     run_config: RunConfig
     stages: StageResults = StageResults()
+    plan_bundle: Optional[TripPlanBundleRecord] = None
     disruption_event: Optional[DisruptionEvent] = None
     replanning: Optional[ReplanningOutput] = None
     hitl_log: List[HITLLogEntry] = []

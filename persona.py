@@ -17,6 +17,7 @@ class Persona(BaseModel):
     trip_length_type: Literal["half_day", "one_day", "multi_day"] = "one_day"
     days: int = 1
     party_size: int = 1
+    companion_notes: str = ""
 
     def summary_zh(self) -> str:
         length_label = {
@@ -25,10 +26,13 @@ class Persona(BaseModel):
             "multi_day": f"{self.days} 天多日遊",
         }[self.trip_length_type]
         gender_label = {"male": "男性", "female": "女性", "unspecified": "未指定性別"}[self.gender]
-        return (
+        summary = (
             f"{self.age_group} 歲、{gender_label}、從 {self.home_location} 出發前往 {self.destination_location}、"
             f"{length_label}、{self.party_size} 人同行"
         )
+        if self.companion_notes.strip():
+            summary += f"，同行需求：{self.companion_notes.strip()}"
+        return summary
 
 
 def build_persona_from_args(args: argparse.Namespace) -> Persona:
@@ -40,6 +44,7 @@ def build_persona_from_args(args: argparse.Namespace) -> Persona:
         trip_length_type=_trip_length_flag_to_type(args.trip_length),
         days=args.days,
         party_size=args.party_size,
+        companion_notes=args.companion_notes,
     )
 
 
@@ -59,3 +64,7 @@ def add_persona_cli_args(parser: argparse.ArgumentParser) -> None:
         "--days", type=int, default=1, help="Number of days, only meaningful for --trip-length multi-day"
     )
     parser.add_argument("--party-size", type=int, default=1)
+    parser.add_argument(
+        "--companion-notes", default="",
+        help="特殊同行需求，例如長輩/幼兒/寵物同行（僅供 schema 對齊，CLI 不主動詢問）",
+    )

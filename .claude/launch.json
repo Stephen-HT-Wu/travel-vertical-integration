@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "webapp",
+      "runtimeExecutable": "/Users/stephen/travel-vertical-integration/.venv/bin/python",
+      "runtimeArgs": ["webapp.py"],
+      "port": 8000
+    }
+  ]
+}
