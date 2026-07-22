@@ -156,13 +156,12 @@
 
   {% if trip_log.plan_bundle %}
   <section class="plan-bundle">
-    <h2><span class="icon">🗺️</span> 兩個方案比較</h2>
+    <h2><span class="icon">🗺️</span> 行程方案</h2>
     <div class="insp-grid">
       {% for opt in trip_log.plan_bundle.options %}
       <div class="card insp-card {{ 'is-selected' if opt.option_id == trip_log.plan_bundle.selected_option_id else '' }}" style="position:relative;">
         {% if opt.option_id == trip_log.plan_bundle.selected_option_id %}<div class="selected-tag">✓ 已選定</div>{% endif %}
         <strong>方案 {{ opt.label }}</strong>
-        {% if opt.option_id == trip_log.plan_bundle.agent_recommended_option_id %}<span class="badge badge-real" style="margin-left:.4rem;">agent 推薦</span>{% endif %}
         <p style="font-size:.85rem; margin:.4rem 0;">{{ opt.why_recommended }}</p>
         <p style="font-size:.8rem; color:var(--text-muted);">{{ opt.days | length }} 天行程
           {%- if opt.transportation %} · 🚄 {{ opt.transportation[0].name }}{% endif %}
@@ -334,7 +333,7 @@
   {% endif %}
 
   <footer class="disclaimer">
-    本 dashboard 中，每個項目旁標示的「真實資料」代表內容來自真實網路搜尋並附上來源連結；標示「模擬資料」代表內容為 LLM 生成的模擬候選方案，並非真實庫存或報價（CLI 全自動流程的交通/住宿/活動固定為模擬資料；對話版由使用者二選一的完整方案則為真實搜尋資料）。標示「🔗 已導流至」的階段，代表使用者被導向該真實網站自行查看報價/完成後續——本系統不追蹤、也不知道對方是否有實際完成訂購，過程中沒有發生任何真實訂位或付款。
+    本 dashboard 中，每個項目旁標示的「真實資料」代表內容來自真實網路搜尋並附上來源連結；標示「模擬資料」代表內容為 LLM 生成的模擬候選方案，並非真實庫存或報價（CLI 全自動流程的交通/住宿/活動固定為模擬資料；對話版由使用者確認的完整方案則為真實搜尋資料）。標示「🔗 已導流至」的階段，代表使用者被導向該真實網站自行查看報價/完成後續——本系統不追蹤、也不知道對方是否有實際完成訂購，過程中沒有發生任何真實訂位或付款。
     {% if trip_log.chat_transcripts %}所有確認與評價皆由使用者本人於對話中做出。{% else %}虛擬使用者的所有確認與評價，皆由獨立的 UserSimulator agent 依人物設定模擬產生。{% endif %}
   </footer>
 

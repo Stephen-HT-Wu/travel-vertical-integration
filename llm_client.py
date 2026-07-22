@@ -31,6 +31,7 @@ import time
 from typing import List, Optional, Tuple, Type, TypeVar
 
 import anthropic
+import pydantic
 from pydantic import BaseModel
 
 from pricing import compute_cost_usd
@@ -82,13 +83,25 @@ def call_structured(
     if extra_messages:
         messages = extra_messages + messages
     start = time.monotonic()
-    response = get_client().messages.parse(
-        model=model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=messages,
-        output_format=output_format,
-    )
+    try:
+        response = get_client().messages.parse(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+            output_format=output_format,
+        )
+    except pydantic.ValidationError as exc:
+        # Distinct failure mode from the parsed_output-is-None check below:
+        # when the JSON is cut off badly enough (e.g. mid-string), the SDK's
+        # own parse() raises directly instead of returning a response with
+        # parsed_output=None — the caller would otherwise see a raw pydantic
+        # dump ("Invalid JSON: EOF while parsing a string...") with no hint
+        # about what actually happened or what to do about it.
+        raise RuntimeError(
+            f"{output_format.__name__} 的回覆內容在完成前被截斷（max_tokens={max_tokens} 可能不夠），"
+            "導致 JSON 不完整而解析失敗。請重新輸入訊息再試一次。"
+        ) from exc
     duration_ms = (time.monotonic() - start) * 1000
     metrics = _build_metrics("structured", model, response.usage, duration_ms)
     if response.parsed_output is None:

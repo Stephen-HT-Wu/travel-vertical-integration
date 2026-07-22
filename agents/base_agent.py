@@ -240,90 +240,6 @@ class StageAgent:
         ]
         return output, history
 
-    def start_search_chat(
-        self,
-        research_system_prompt: str,
-        synth_system_prompt: str,
-        user_content: str,
-        output_format: Type[T],
-        run_config: RunConfig,
-        max_tokens: int = 4000,
-        synth_max_tokens: int = 8000,
-        max_uses: int = 5,
-    ) -> "tuple[T, List[dict]]":
-        """Like start_chat, but the first turn is grounded in one real
-        web_search pass (see run_with_search's docstring for why
-        synth_max_tokens defaults higher). Later turns in the same chat
-        reuse this grounding via continue_chat rather than searching again —
-        keeps a multi-turn inspiration conversation from re-paying the ~90k+
-        input-token cost of a fresh search on every refinement."""
-        self.last_call_metrics = []
-        allowed_domains: Optional[List[str]] = (
-            run_config.allowed_domains if run_config.site_mode == "allowlist" else None
-        )
-        research, research_metrics = call_with_web_search(
-            model=self.model, system=research_system_prompt, user_content=user_content,
-            allowed_domains=allowed_domains, max_tokens=max_tokens, max_uses=max_uses,
-        )
-        self.last_call_metrics.append(self._tag(research_metrics))
-        history = [
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": research.content},
-        ]
-        output, synth_metrics = call_structured(
-            model=self.model, system=synth_system_prompt, user_content=SYNTH_INSTRUCTION,
-            output_format=output_format, extra_messages=history, max_tokens=synth_max_tokens,
-        )
-        self.last_call_metrics.append(self._tag(synth_metrics))
-        history = history + [
-            {"role": "user", "content": SYNTH_INSTRUCTION},
-            {"role": "assistant", "content": output.model_dump_json()},
-        ]
-        return output, history
-
-    def start_fetch_chat(
-        self,
-        fetch_system_prompt: str,
-        synth_system_prompt: str,
-        user_content: str,
-        output_format: Type[T],
-        run_config: RunConfig,
-        max_tokens: int = 4000,
-        synth_max_tokens: int = 8000,
-        max_uses: int = 3,
-    ) -> "tuple[T, List[dict], List[ArticleSource]]":
-        """Like start_search_chat, but grounds the first turn in web_fetch
-        (specific known URLs) instead of web_search (open-ended query).
-        Caller MUST embed the target URLs as plain text in user_content —
-        web_fetch can only fetch URLs already present in the conversation.
-        Also returns the ground-truth (title, url) pairs extracted straight
-        from the fetch results, for callers that don't want to trust the
-        synthesis call's own copy of the title (see extract_fetched_sources)."""
-        self.last_call_metrics = []
-        allowed_domains: Optional[List[str]] = (
-            run_config.allowed_domains if run_config.site_mode == "allowlist" else None
-        )
-        fetch_response, fetch_metrics = call_with_web_fetch(
-            model=self.model, system=fetch_system_prompt, user_content=user_content,
-            allowed_domains=allowed_domains, max_tokens=max_tokens, max_uses=max_uses,
-        )
-        self.last_call_metrics.append(self._tag(fetch_metrics))
-        fetched_sources = extract_fetched_sources(fetch_response)
-        history = [
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": fetch_response.content},
-        ]
-        output, synth_metrics = call_structured(
-            model=self.model, system=synth_system_prompt, user_content=SYNTH_INSTRUCTION,
-            output_format=output_format, extra_messages=history, max_tokens=synth_max_tokens,
-        )
-        self.last_call_metrics.append(self._tag(synth_metrics))
-        history = history + [
-            {"role": "user", "content": SYNTH_INSTRUCTION},
-            {"role": "assistant", "content": output.model_dump_json()},
-        ]
-        return output, history, fetched_sources
-
     # -- streaming primitives ---------------------------------------------
     # Generator-based counterparts of the chat primitives above, used only by
     # PlanningAgent's plan-bundle flow (see agents/planning_agent.py) so the
@@ -401,15 +317,25 @@ class StageAgent:
         fetch_max_uses: int = 3,
         search_max_uses: int = 6,
         max_tokens: int = 4000,
-        synth_max_tokens: int = 10000,
+        synth_max_tokens: int = 16000,
         fetch_label: str = "抓取資料",
         search_label: str = "搜尋資料",
         synth_label: str = "整合方案",
     ) -> Iterator[dict]:
         """Streaming counterpart of the (now removed) blocking
         start_dual_ground_chat — see its docstring history for the two-pass
-        fetch+search grounding rationale. Pass fetch_system_prompt=None to
-        skip the fetch step (the RAG-miss path)."""
+        fetch+search grounding rationale. synth_max_tokens defaults higher
+        than a typical structured call's budget (see call_structured's
+        pydantic.ValidationError handling for what happens when a budget is
+        too small: the response gets cut off mid-JSON and fails to parse) —
+        a full day-by-day trip plan with real transportation/accommodation/
+        activities and per-block citations is a large single output, and a
+        real multi-day trip was observed to overrun a 10000-token budget
+        mid-response. The caller (PlanningAgent.generate_plan_bundle_
+        streaming) always passes fetch_system_prompt=None today (no local
+        RAG/article-fetch step exists anymore — see agents/planning_agent.py
+        module docstring) — this parameter is kept as generic reusable
+        infra, not because anything currently exercises it."""
         self.last_call_metrics = []
         allowed_domains: Optional[List[str]] = (
             run_config.allowed_domains if run_config.site_mode == "allowlist" else None

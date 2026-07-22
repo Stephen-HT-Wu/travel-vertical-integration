@@ -1,10 +1,10 @@
 """Interactive local web demo — chat-driven front end.
 
 Real multi-turn text chat for the unified planning phase: free-text trip
-intake -> clarification (if needed) -> two complete, real (not simulated)
-trip plan options, each bundling itinerary + transportation + accommodation
-(if overnight) + activities with real vendor deep links (see deep_links.py).
-Once the user picks one, unless disabled via local_settings.json ->
+intake -> clarification (if needed) -> one complete, real (not simulated)
+trip plan, bundling itinerary + transportation + accommodation (if
+overnight) + activities with real vendor deep links (see deep_links.py).
+Once the user picks it, unless disabled via local_settings.json ->
 automatic hand-off to the existing UserSimulatorAgent-driven tail
 (dining/attractions/shopping/guide/replanning/review); then an optional,
 explicitly user-authorized Google Calendar sync (also toggleable).
@@ -25,7 +25,6 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 import calendar_integration
-import site_index
 from dashboard.render_dashboard import render as render_dashboard_html
 from chat_session import ChatSession
 from local_settings import load_local_settings
@@ -41,11 +40,6 @@ OUTPUT_DIR = BASE_DIR / "output" / "chat_runs"
 CALENDAR_REDIRECT_URI = "http://127.0.0.1:8000/api/calendar/oauth/callback"
 
 LOCAL_SETTINGS = load_local_settings()
-# Built once at startup (not per-request/session). If rag_sitemap_url isn't
-# set this is a fast no-op (None); if the on-disk cache is missing or stale
-# this blocks startup while it builds — run build_rag_index.py ahead of time
-# to avoid a slow first launch.
-SITE_INDEX = site_index.ensure_index(LOCAL_SETTINGS)
 
 CHAT_SESSIONS: Dict[str, ChatSession] = {}
 TAIL_QUEUES: Dict[str, "queue.Queue"] = {}
@@ -89,7 +83,6 @@ def get_config():
         "default_inspiration_domains": LOCAL_SETTINGS.default_inspiration_domains,
         "enable_tail_pipeline": LOCAL_SETTINGS.enable_tail_pipeline,
         "enable_calendar_sync": LOCAL_SETTINGS.enable_calendar_sync,
-        "rag_enabled": SITE_INDEX is not None,
     }
 
 
@@ -109,7 +102,7 @@ def chat_start(req: RunRequest):
     run_id = uuid.uuid4().hex[:12]
     session = ChatSession(
         run_id, run_config, OUTPUT_DIR / run_id,
-        local_settings=LOCAL_SETTINGS, site_index=SITE_INDEX,
+        local_settings=LOCAL_SETTINGS,
     )
     CHAT_SESSIONS[run_id] = session
     return {"run_id": run_id}

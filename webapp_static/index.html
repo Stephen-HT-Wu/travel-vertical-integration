@@ -96,7 +96,6 @@
   .badge { display: inline-block; font-size: .68rem; padding: .1rem .5rem; border-radius: 999px; font-weight: 600; }
   .badge-real { background: var(--real-bg); color: var(--real); }
   .badge-sim { background: var(--sim-bg); color: var(--sim); }
-  .badge-agent-pick { background: var(--running-bg); color: var(--running); margin-left: .3rem; }
   .day-block { display: flex; gap: .6rem; padding: .3rem 0; border-bottom: 1px dashed var(--border); font-size: .86rem; }
   .day-block:last-child { border-bottom: none; }
   .day-block .time { flex: 0 0 90px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
@@ -171,7 +170,7 @@
 <div class="wrap">
   <header class="page-header">
     <h1>旅遊產業垂直整合 Agent Demo</h1>
-    <div class="sub" id="header-sub">對話版 — 用一段話描述你的旅行，agent 生成兩個真實方案讓你二選一，並導流到真實網站查看報價</div>
+    <div class="sub" id="header-sub">對話版 — 用一段話描述你的旅行，agent 生成一個真實方案，並導流到真實網站查看報價</div>
   </header>
 
   <section id="form-section">
@@ -342,7 +341,7 @@ function renderVendorGroup(icon, label, candidates) {
   return `<div class="plan-vendor-group"><div class="plan-vendor-label">${icon} ${label}</div>${items}</div>`;
 }
 
-function renderPlanOption(opt, isRecommended) {
+function renderPlanOption(opt) {
   let daysHtml = "";
   for (const day of opt.days) {
     daysHtml += `<div class="day-title">第 ${day.day_number} 天</div>`;
@@ -373,7 +372,6 @@ function renderPlanOption(opt, isRecommended) {
     <div class="plan-option-card">
       <div class="plan-option-head">
         <span class="plan-option-label">方案 ${esc(opt.label)}</span>
-        ${isRecommended ? '<span class="badge badge-agent-pick">agent 推薦</span>' : ''}
       </div>
       <div class="sub" style="margin:.3rem 0 .6rem;">${esc(opt.why_recommended)}</div>
       ${daysHtml}
@@ -385,8 +383,8 @@ function renderPlanOption(opt, isRecommended) {
     </div>`;
 }
 
-function renderPlanBundle(options, agentRecommendedId) {
-  return options.map(opt => renderPlanOption(opt, opt.option_id === agentRecommendedId)).join("");
+function renderPlanBundle(options) {
+  return options.map(opt => renderPlanOption(opt)).join("");
 }
 
 async function apiPost(path, body) {
@@ -484,7 +482,7 @@ function streamMessage(turnId, text) {
 
 function renderChatReply(turnId, r) {
   planReady = !!r.proposal.plan_ready;
-  const proposalHtml = planReady ? renderPlanBundle(r.proposal.options, r.proposal.agent_recommended_option_id) : "";
+  const proposalHtml = planReady ? renderPlanBundle(r.proposal.options) : "";
   finishThinkingTurn(turnId, r.reply_message, proposalHtml);
   updateTotalsBar(r.totals);
 }
@@ -713,7 +711,7 @@ async function loadConfig() {
 
   if (!CONFIG.enable_tail_pipeline || !CONFIG.enable_calendar_sync) {
     document.getElementById("header-sub").textContent =
-      "對話版 — 用一段話描述你的旅行，agent 生成兩個真實方案讓你二選一，並導流到真實網站查看報價（本次示範範圍：行程規劃 → 導流）";
+      "對話版 — 用一段話描述你的旅行，agent 生成一個真實方案，並導流到真實網站查看報價（本次示範範圍：行程規劃 → 導流）";
   }
 }
 loadConfig();

@@ -1,13 +1,13 @@
 """Real-user multi-turn chat session for the unified planning phase, ending
-with the user picking one of two complete, real (not simulated) trip plan
-options — each bundling itinerary + transportation + accommodation (if
-overnight) + activities, all with real vendor deep links (see deep_links.py)
-— instead of separate per-stage confirm+referral steps. Then hands off to
-the existing auto-pipeline (orchestrator.run_tail_streaming) for the
-content-recommendation tail (dining/attractions/shopping/guide/replanning/
-review) — unless disabled via local_settings.enable_tail_pipeline, in which
-case the session ends right after the plan pick. That tail, when it does
-run, stays UserSimulatorAgent-driven exactly as before.
+with the user picking a complete, real (not simulated) trip plan — bundling
+itinerary + transportation + accommodation (if overnight) + activities, all
+with real vendor deep links (see deep_links.py) — instead of separate
+per-stage confirm+referral steps. Then hands off to the existing
+auto-pipeline (orchestrator.run_tail_streaming) for the content-
+recommendation tail (dining/attractions/shopping/guide/replanning/review) —
+unless disabled via local_settings.enable_tail_pipeline, in which case the
+session ends right after the plan pick. That tail, when it does run, stays
+UserSimulatorAgent-driven exactly as before.
 
 Persona is no longer collected via a structured form: the session starts
 with a placeholder Persona and PlanningAgent.generate_plan_bundle_streaming()
@@ -42,7 +42,6 @@ from schemas import (
     TripLog,
     TripPlanBundleRecord,
 )
-from site_index import SiteIndex
 
 
 def _now() -> str:
@@ -56,7 +55,6 @@ class ChatSession:
         run_config: RunConfig,
         output_dir: Path,
         local_settings: Optional[LocalSettings] = None,
-        site_index: Optional[SiteIndex] = None,
     ):
         self.run_id = run_id
         # Placeholder — overwritten by PlanningAgent.generate_plan_bundle()'s
@@ -67,7 +65,6 @@ class ChatSession:
         self.run_config = run_config
         self.output_dir = output_dir
         self.local_settings = local_settings or LocalSettings()
-        self.site_index = site_index
         self.phase = "itinerary"  # itinerary -> tail -> done
         self.trip_log = TripLog(run_id=run_id, created_at=_now(), persona=self.persona, run_config=run_config)
 
@@ -120,9 +117,8 @@ class ChatSession:
         agent = self.planning_agent
         if not self.plan_ready:
             sub_gen = agent.generate_plan_bundle_streaming(
-                self.persona, history, user_message, self.run_config, self.site_index,
-                self.local_settings.rag_top_n, self.clarification_rounds,
-                self.local_settings.rag_max_clarifying_questions,
+                self.persona, history, user_message, self.run_config,
+                self.clarification_rounds, self.local_settings.max_clarifying_questions,
             )
         else:
             sub_gen = agent.refine_bundle_streaming(history, user_message)

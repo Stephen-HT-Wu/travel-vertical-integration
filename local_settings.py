@@ -5,7 +5,7 @@ mechanism existed. See local_settings.example.json for the shape.
 """
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from pydantic import BaseModel
 
@@ -16,11 +16,7 @@ class LocalSettings(BaseModel):
     default_inspiration_domains: List[str] = []  # [] == unrestricted search (today's default)
     enable_tail_pipeline: bool = True
     enable_calendar_sync: bool = True
-    rag_sitemap_url: Optional[str] = None  # None == RAG disabled, falls back to live web_search only
-    rag_max_articles: int = 1000
-    rag_top_n: int = 3  # how many articles the planning orchestrator grounds an itinerary in
-    rag_max_clarifying_questions: int = 3
-    rag_cache_ttl_hours: float = 24.0
+    max_clarifying_questions: int = 3  # cap on intake clarification rounds before proceeding regardless
 
 
 def load_local_settings(path: Path = _PATH) -> LocalSettings:
