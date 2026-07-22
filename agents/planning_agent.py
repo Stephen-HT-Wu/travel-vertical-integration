@@ -9,12 +9,17 @@ exactly two complete trip packages — each with real (not simulated)
 transportation/accommodation/activities baked in, grounded in the
 locally-cached RAG title-selection (primary axis) plus a live web_search
 pass for real vendor names and supplementary corroboration (see
-start_dual_ground_chat in agents/base_agent.py).
+start_dual_ground_chat_streaming in agents/base_agent.py).
+
+Every method here is a generator (see agents/base_agent.py's streaming
+primitives) so the webapp can surface each individual API call's progress
+over SSE instead of one opaque multi-minute blocking call — see
+generate_plan_bundle_streaming's docstring for the event shapes.
 
 This is chat-only. The CLI/auto-pipeline path (orchestrator.py) still uses
 InspirationAgent.run()/ItineraryAgent.run() unchanged — this class doesn't
 touch or replace those."""
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 from agents.base_agent import StageAgent
 from llm_client import call_structured
@@ -28,6 +33,14 @@ from schemas import (
     RunConfig,
 )
 from site_index import SiteIndex
+
+STEP_LABEL_INTAKE = "了解你的需求"
+STEP_LABEL_RAG_SELECT = "從常用資料庫挑選文章"
+STEP_LABEL_FETCH = "抓取主軸文章全文"
+STEP_LABEL_SEARCH_CORROBORATION = "搜尋真實交通/住宿/活動資訊"
+STEP_LABEL_SEARCH_RAG_MISS = "搜尋行程內容與交通/住宿/活動資訊"
+STEP_LABEL_SYNTH = "整合成兩個完整方案"
+STEP_LABEL_REFINE = "調整方案內容"
 
 INTAKE_SYSTEM = """你是一位行程規劃顧問，正在跟真實旅客對話。使用者會用自己的話描述這趟旅行，可能一次講很多資訊，也可能講得很簡略。
 
@@ -79,7 +92,7 @@ _BUNDLE_SYNTH_COMMON = """根據上一輪的真實研究結果（{primary_source
 
 2. transportation：恰好 1 筆真實交通建議（CandidateOption），data_source 固定為 "real_search"，name/vendor/description 必須是搜尋結果中真實存在的資訊，deep_link_query 填「真實地名/路線名稱」（之後會用來組真實的 Google 地圖連結）。
 
-3. accommodation：如果 trip_length_type 是 half_day 或 one_day（不過夜），這裡留空陣列 []；如果是 multi_day（過夜），提供 1 筆真實存在的旅宿（CandidateOption），data_source 固定為 "real_search"，name 必須是搜尋結果中真實存在的旅宿名稱（絕對不可捏造），deep_link_query 也填這個真實旅宿名稱（之後會用來查 Booking.com／Agoda 真實報價）。
+3. accommodation：如果 trip_length_type 是 half_day 或 one_day（不過夜），這裡留空陣列 []；如果是 multi_day（過夜），提供 1 筆真實存在的旅宿（CandidateOption），data_source 固定為 "real_search"，name 必須是搜尋結果中真實存在的旅宿名稱（絕對不可捏造），deep_link_query 也填這個真實旅宿名稱（之後會用來組 Google 搜尋連結，讓使用者自己比較各平台報價）。
 
 4. activities：1-3 筆真實存在的活動/體驗/景點（CandidateOption），data_source 固定為 "real_search"，deep_link_query 填真實的活動/景點名稱或關鍵字。
 
@@ -109,9 +122,13 @@ class PlanningAgent(StageAgent):
     def __init__(self, model: str = "claude-opus-4-8"):
         super().__init__("itinerary", model)
 
-    def _select_from_rag(
-        self, persona: Persona, style_summary: str, site_index: SiteIndex, top_n: int
-    ) -> Tuple[RagSelection, CallMetrics]:
+    def _select_from_rag_streaming(
+        self, persona: Persona, style_summary: str, site_index: SiteIndex, top_n: int,
+        label: str = STEP_LABEL_RAG_SELECT,
+    ) -> Iterator[dict]:
+        """Does not touch self.last_call_metrics — same contract as before:
+        the caller (generate_plan_bundle_streaming) accumulates the returned
+        metrics itself."""
         titles_block = "\n".join(f"- [{a.url}] {a.title}" for a in site_index.articles)
         user_content = (
             f"人物設定：{persona.summary_zh()}\n"
@@ -121,11 +138,14 @@ class PlanningAgent(StageAgent):
             f"請從上面的列表中，挑出最多 {top_n} 篇跟這個人物設定、目的地、風格偏好最相關的文章，"
             f"作為兩個方案共用的主軸參考來源。"
         )
+        yield {"type": "step_started", "label": label}
         output, metrics = call_structured(
             model=self.model, system=RAG_SELECT_SYSTEM, user_content=user_content,
             output_format=RagSelection, max_tokens=1024,
         )
-        return output, self._tag(metrics)
+        tagged = self._tag(metrics)
+        yield {"type": "step_completed", "label": label, "metrics": tagged.model_dump()}
+        yield {"type": "result", "value": (output, tagged)}
 
     @staticmethod
     def _resolve_persona(decision: IntakeDecision) -> Persona:
@@ -147,7 +167,7 @@ class PlanningAgent(StageAgent):
             companion_notes=decision.companion_notes.strip(),
         )
 
-    def generate_plan_bundle(
+    def generate_plan_bundle_streaming(
         self,
         persona: Persona,
         history: List[dict],
@@ -157,7 +177,16 @@ class PlanningAgent(StageAgent):
         rag_top_n: int,
         round_number: int,
         max_rounds: int,
-    ) -> Tuple[PlanBundleTurn, List[dict], Optional[Persona]]:
+    ) -> Iterator[dict]:
+        """Streaming counterpart of the (now removed) blocking
+        generate_plan_bundle — logic is a line-for-line copy, just with each
+        sub-call's step_started/step_completed events relayed upward via a
+        manual for-loop (non-result events pass through as-is; the one
+        result event per sub-call is intercepted for its value) and a
+        final {"type": "result", "value": (PlanBundleTurn, new_history,
+        Optional[Persona])} event replacing the old return statement.
+        Step count by branch: needs-clarification -> 1; RAG-hit -> 5;
+        RAG-miss -> 3."""
         accumulated: List[CallMetrics] = []
 
         if not history:
@@ -165,9 +194,17 @@ class PlanningAgent(StageAgent):
                 "（使用者尚未輸入訊息，請主動邀請他用一段話描述這趟旅行：出發地、目的地、天數/人數，"
                 "以及是否有長輩/幼兒/寵物等特殊同行需求。）"
             )
-            decision, decide_history = self.start_chat(INTAKE_SYSTEM, user_content, IntakeDecision)
+            sub = self.start_chat_streaming(INTAKE_SYSTEM, user_content, IntakeDecision, label=STEP_LABEL_INTAKE)
         else:
-            decision, decide_history = self.continue_chat(INTAKE_SYSTEM, history, user_message, IntakeDecision)
+            sub = self.continue_chat_streaming(
+                INTAKE_SYSTEM, history, user_message, IntakeDecision, label=STEP_LABEL_INTAKE
+            )
+        decision = decide_history = None
+        for event in sub:
+            if event["type"] == "result":
+                decision, decide_history = event["value"]
+            else:
+                yield event
         accumulated += self.last_call_metrics
 
         have_destination = bool((decision.destination_location or "").strip())
@@ -185,7 +222,8 @@ class PlanningAgent(StageAgent):
         if needs_clarification:
             self.last_call_metrics = accumulated
             turn = PlanBundleTurn(reply_message=decision.reply_message, needs_clarification=True)
-            return turn, decide_history, None
+            yield {"type": "result", "value": (turn, decide_history, None)}
+            return
 
         resolved_persona = self._resolve_persona(decision)
         style_summary = decision.style_summary.strip() or (
@@ -194,7 +232,12 @@ class PlanningAgent(StageAgent):
 
         selected_urls: List[str] = []
         if site_index and site_index.articles:
-            selection, select_metrics = self._select_from_rag(resolved_persona, style_summary, site_index, rag_top_n)
+            selection = select_metrics = None
+            for event in self._select_from_rag_streaming(resolved_persona, style_summary, site_index, rag_top_n):
+                if event["type"] == "result":
+                    selection, select_metrics = event["value"]
+                else:
+                    yield event
             accumulated.append(select_metrics)
             known_urls = {a.url for a in site_index.articles}
             selected_urls = [u for u in selection.selected_urls if u in known_urls][:rag_top_n]
@@ -212,7 +255,7 @@ class PlanningAgent(StageAgent):
             search_user_content = (
                 base_context + "請搜尋規劃這趟行程所需的真實交通/住宿（若過夜）/活動資訊，以及 1-2 篇可作佐證的其他文章。"
             )
-            output, new_history, fetched_sources = self.start_dual_ground_chat(
+            sub2 = self.start_dual_ground_chat_streaming(
                 fetch_system_prompt=BUNDLE_FETCH_SYSTEM,
                 fetch_user_content=fetch_user_content,
                 search_system_prompt=CORROBORATION_SEARCH_SYSTEM,
@@ -222,10 +265,13 @@ class PlanningAgent(StageAgent):
                 output_format=PlanBundleSynthesis,
                 run_config=run_config,
                 fetch_max_uses=len(selected_urls),
+                fetch_label=STEP_LABEL_FETCH,
+                search_label=STEP_LABEL_SEARCH_CORROBORATION,
+                synth_label=STEP_LABEL_SYNTH,
             )
         else:
             search_user_content = base_context + "請搜尋規劃這趟行程所需的完整真實資訊（目的地行程內容、交通、住宿（若過夜）、活動）。"
-            output, new_history, fetched_sources = self.start_dual_ground_chat(
+            sub2 = self.start_dual_ground_chat_streaming(
                 fetch_system_prompt=None,
                 fetch_user_content=None,
                 search_system_prompt=SEARCH_SYSTEM_AFTER_RAG_MISS,
@@ -235,7 +281,17 @@ class PlanningAgent(StageAgent):
                 output_format=PlanBundleSynthesis,
                 run_config=run_config,
                 search_max_uses=6,
+                fetch_label=None,
+                search_label=STEP_LABEL_SEARCH_RAG_MISS,
+                synth_label=STEP_LABEL_SYNTH,
             )
+
+        output = new_history = fetched_sources = None
+        for event in sub2:
+            if event["type"] == "result":
+                output, new_history, fetched_sources = event["value"]
+            else:
+                yield event
         accumulated += self.last_call_metrics
         self.last_call_metrics = accumulated
 
@@ -256,10 +312,17 @@ class PlanningAgent(StageAgent):
             options=output.options,
             agent_recommended_option_id=output.agent_recommended_option_id,
         )
-        return turn, new_history, resolved_persona
+        yield {"type": "result", "value": (turn, new_history, resolved_persona)}
 
-    def refine_bundle(self, history: List[dict], user_message: str) -> Tuple[PlanBundleTurn, List[dict], None]:
-        output, new_history = self.continue_chat(REFINE_BUNDLE_SYSTEM, history, user_message, PlanBundleSynthesis)
+    def refine_bundle_streaming(self, history: List[dict], user_message: str) -> Iterator[dict]:
+        output = new_history = None
+        for event in self.continue_chat_streaming(
+            REFINE_BUNDLE_SYSTEM, history, user_message, PlanBundleSynthesis, label=STEP_LABEL_REFINE
+        ):
+            if event["type"] == "result":
+                output, new_history = event["value"]
+            else:
+                yield event
         turn = PlanBundleTurn(
             reply_message=output.reply_message,
             needs_clarification=False,
@@ -267,4 +330,4 @@ class PlanningAgent(StageAgent):
             options=output.options,
             agent_recommended_option_id=output.agent_recommended_option_id,
         )
-        return turn, new_history, None
+        yield {"type": "result", "value": (turn, new_history, None)}

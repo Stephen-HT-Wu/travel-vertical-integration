@@ -20,7 +20,7 @@ call. The orchestrator reads it immediately after invoking a stage method,
 so this stays simple mutable state rather than changing every stage agent's
 return signature.
 """
-from typing import List, Optional, Type, TypeVar
+from typing import Iterator, List, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
@@ -324,7 +324,71 @@ class StageAgent:
         ]
         return output, history, fetched_sources
 
-    def start_dual_ground_chat(
+    # -- streaming primitives ---------------------------------------------
+    # Generator-based counterparts of the chat primitives above, used only by
+    # PlanningAgent's plan-bundle flow (see agents/planning_agent.py) so the
+    # webapp can surface per-call progress (step_started/step_completed) over
+    # SSE instead of one opaque multi-minute blocking call. Each yields zero
+    # or more {"type": "step_started"|"step_completed", ...} events and
+    # exactly one terminal {"type": "result", "value": ...} event carrying
+    # what the blocking equivalent would have returned. A callback can't
+    # yield back into the caller's generator frame, which is why this is
+    # generator composition (yield/relay), not a callback — see _step().
+
+    def _step(self, label: str, fn, *args, **kwargs) -> Iterator[dict]:
+        """Wraps one llm_client.call_* invocation (anything returning
+        (result, CallMetrics)) as step_started -> step_completed -> result.
+        Tags and appends the metrics to self.last_call_metrics itself, same
+        as every blocking method above does inline."""
+        yield {"type": "step_started", "label": label}
+        result, metrics = fn(*args, **kwargs)
+        tagged = self._tag(metrics)
+        self.last_call_metrics.append(tagged)
+        yield {"type": "step_completed", "label": label, "metrics": tagged.model_dump()}
+        yield {"type": "result", "value": (result, tagged)}
+
+    def start_chat_streaming(
+        self, system_prompt: str, user_content: str, output_format: Type[T],
+        max_tokens: int = 4096, label: str = "呼叫模型",
+    ) -> Iterator[dict]:
+        self.last_call_metrics = []
+        output = None
+        for event in self._step(
+            label, call_structured, model=self.model, system=system_prompt,
+            user_content=user_content, output_format=output_format, max_tokens=max_tokens,
+        ):
+            if event["type"] == "result":
+                output, _ = event["value"]
+            else:
+                yield event
+        history = [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": output.model_dump_json()},
+        ]
+        yield {"type": "result", "value": (output, history)}
+
+    def continue_chat_streaming(
+        self, system_prompt: str, history: List[dict], user_message: str, output_format: Type[T],
+        max_tokens: int = 4096, label: str = "呼叫模型",
+    ) -> Iterator[dict]:
+        self.last_call_metrics = []
+        output = None
+        for event in self._step(
+            label, call_structured, model=self.model, system=system_prompt,
+            user_content=user_message, output_format=output_format,
+            extra_messages=history, max_tokens=max_tokens,
+        ):
+            if event["type"] == "result":
+                output, _ = event["value"]
+            else:
+                yield event
+        new_history = history + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": output.model_dump_json()},
+        ]
+        yield {"type": "result", "value": (output, new_history)}
+
+    def start_dual_ground_chat_streaming(
         self,
         fetch_system_prompt: Optional[str],
         fetch_user_content: Optional[str],
@@ -338,16 +402,14 @@ class StageAgent:
         search_max_uses: int = 6,
         max_tokens: int = 4000,
         synth_max_tokens: int = 10000,
-    ) -> "tuple[T, List[dict], List[ArticleSource]]":
-        """Grounds one synthesis call in TWO independent research passes: an
-        optional web_fetch over specific known URLs (the RAG-selected primary
-        articles), followed by a web_search pass (real transportation/
-        accommodation/activities facts). Each tool call is made independently
-        — llm_client's call_with_web_fetch/call_with_web_search signatures
-        are untouched — and their results are stitched into one history list
-        here, exactly like start_fetch_chat/start_search_chat already do
-        internally. Pass fetch_system_prompt=None to skip the fetch step
-        entirely (the RAG-miss path)."""
+        fetch_label: str = "抓取資料",
+        search_label: str = "搜尋資料",
+        synth_label: str = "整合方案",
+    ) -> Iterator[dict]:
+        """Streaming counterpart of the (now removed) blocking
+        start_dual_ground_chat — see its docstring history for the two-pass
+        fetch+search grounding rationale. Pass fetch_system_prompt=None to
+        skip the fetch step (the RAG-miss path)."""
         self.last_call_metrics = []
         allowed_domains: Optional[List[str]] = (
             run_config.allowed_domains if run_config.site_mode == "allowlist" else None
@@ -356,38 +418,54 @@ class StageAgent:
         fetched_sources: List[ArticleSource] = []
         fetch_history: List[dict] = []
         if fetch_system_prompt is not None:
-            fetch_response, fetch_metrics = call_with_web_fetch(
-                model=self.model, system=fetch_system_prompt, user_content=fetch_user_content,
-                allowed_domains=allowed_domains, max_tokens=max_tokens, max_uses=fetch_max_uses,
-            )
-            self.last_call_metrics.append(self._tag(fetch_metrics))
+            fetch_response = None
+            for event in self._step(
+                fetch_label, call_with_web_fetch, model=self.model, system=fetch_system_prompt,
+                user_content=fetch_user_content, allowed_domains=allowed_domains,
+                max_tokens=max_tokens, max_uses=fetch_max_uses,
+            ):
+                if event["type"] == "result":
+                    fetch_response, _ = event["value"]
+                else:
+                    yield event
             fetched_sources = extract_fetched_sources(fetch_response)
             fetch_history = [
                 {"role": "user", "content": fetch_user_content},
                 {"role": "assistant", "content": fetch_response.content},
             ]
 
-        search_response, search_metrics = call_with_web_search(
-            model=self.model, system=search_system_prompt, user_content=search_user_content,
-            allowed_domains=allowed_domains, max_tokens=max_tokens, max_uses=search_max_uses,
-        )
-        self.last_call_metrics.append(self._tag(search_metrics))
+        search_response = None
+        for event in self._step(
+            search_label, call_with_web_search, model=self.model, system=search_system_prompt,
+            user_content=search_user_content, allowed_domains=allowed_domains,
+            max_tokens=max_tokens, max_uses=search_max_uses,
+        ):
+            if event["type"] == "result":
+                search_response, _ = event["value"]
+            else:
+                yield event
         search_history = [
             {"role": "user", "content": search_user_content},
             {"role": "assistant", "content": search_response.content},
         ]
 
         combined_history = fetch_history + search_history
-        output, synth_metrics = call_structured(
-            model=self.model, system=synth_system_prompt, user_content=synth_user_content,
-            output_format=output_format, extra_messages=combined_history, max_tokens=synth_max_tokens,
-        )
-        self.last_call_metrics.append(self._tag(synth_metrics))
+        output = None
+        for event in self._step(
+            synth_label, call_structured, model=self.model, system=synth_system_prompt,
+            user_content=synth_user_content, output_format=output_format,
+            extra_messages=combined_history, max_tokens=synth_max_tokens,
+        ):
+            if event["type"] == "result":
+                output, _ = event["value"]
+            else:
+                yield event
+
         full_history = combined_history + [
             {"role": "user", "content": synth_user_content},
             {"role": "assistant", "content": output.model_dump_json()},
         ]
-        return output, full_history, fetched_sources
+        yield {"type": "result", "value": (output, full_history, fetched_sources)}
 
     def continue_chat(
         self, system_prompt: str, history: List[dict], user_message: str, output_format: Type[T], max_tokens: int = 4096

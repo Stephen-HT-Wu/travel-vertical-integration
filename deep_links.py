@@ -28,8 +28,7 @@ class DeepLink(BaseModel):
 # vendor key -> (display vendor name, allowed host)
 _VENDOR_HOSTS = {
     "google_maps": ("Google 地圖", "www.google.com"),
-    "booking": ("Booking.com", "www.booking.com"),
-    "agoda": ("Agoda", "www.agoda.com"),
+    "google_search": ("Google 搜尋", "www.google.com"),
     "kkday": ("KKday", "www.kkday.com"),
 }
 
@@ -52,48 +51,32 @@ def build_transportation_link(origin: str, destination: str) -> DeepLink:
     return _assert_host("google_maps", "https://www.google.com/maps/dir/?" + urlencode(params))
 
 
-def build_accommodation_links(real_name: str, party_size: int = 1) -> "list[DeepLink]":
-    """Returns [Booking.com, Agoda] for a REAL hotel/lodging name pulled
-    from live search results.
+def build_accommodation_link(real_name: str, destination: str) -> DeepLink:
+    """A Google search for the real accommodation name + destination — not a
+    specific OTA's page. Two earlier designs were tried and both failed a
+    live-verification check (2026-07-22):
 
-    Booking.com: `ss={real_name}`, no dates — live-verified working
-    (2026-07-18), high confidence. Feeding it the real name (rather than the
-    old category/style string) actually resolves a past honesty tension:
-    the old version deliberately avoided a specific hotel name because that
-    name was LLM-fabricated; now that it's a real, search-sourced name,
-    using it directly is the more honest choice, not a compromise.
+    1. Booking.com/Agoda search-results pages worked mechanically, but
+       committing to ONE OTA per accommodation risked the property simply
+       not being listed there.
+    2. Trying to link directly to "this one specific property" page (e.g. a
+       Booking.com `/hotel/{country}/{slug}.html` canonical URL) by grabbing
+       whatever booking.com/agoda.com link a search happened to surface was
+       tested and rejected: searching a real small Taiwanese B&B's name
+       plus "booking.com" surfaced a Booking.com link for a DIFFERENT,
+       similarly-named property in a different city; searching a known
+       hotel's name plus "agoda.com" surfaced no agoda.com page at all.
+       Guessing "this is the same place" from search-result text is exactly
+       the kind of confident-but-wrong claim this codebase avoids elsewhere
+       (see e.g. the Booking/Agoda decision this replaced).
 
-    Agoda: live-checked TWICE in a read-only browser session
-    (2026-07-22, no purchase/booking action taken) — including a targeted
-    re-check after an initial design draft assumed a "homepage prefill"
-    tier would work. It does not:
-      - A genuine *results-list* URL requires a `lastSearchedCity=<id>&
-        area=<id>` pair resolved by Agoda's own undocumented autocomplete
-        endpoint (e.g. searching "礁溪" resolved to
-        `lastSearchedCity=12080&area=503393`) — not derivable from a plain
-        name, and out of scope to reverse-engineer.
-      - A URL built from only human-constructable params (`textToSearch`/
-        `searchText`/`checkIn`/`checkOut`/`adults`/`los`/`locale`, no
-        resolved ID) does NOT prefill anything: Agoda strips the entire
-        query string client-side and redirects to a bare homepage
-        (`window.location.search` came back `""` after landing, confirmed
-        via direct inspection, for two different param-name variants).
-      - Submitting the on-page search form without first picking a real
-        autocomplete suggestion also does not navigate anywhere — Agoda
-        requires the resolved ID even to proceed.
-    Given none of that is derivable without calling Agoda's private
-    autocomplete API (out of scope — undocumented, ToS-risky), the honest
-    choice is a plain homepage link with no false pretense of pre-filling
-    anything. The UI must tell the user to search for the real name
-    themselves once there (see webapp_static/index.html referral panel
-    copy) rather than implying the link does more than it does."""
-    booking = _assert_host(
-        "booking",
-        "https://www.booking.com/searchresults.html?"
-        + urlencode({"ss": real_name, "group_adults": party_size, "no_rooms": 1}),
-    )
-    agoda = _assert_host("agoda", "https://www.agoda.com/zh-tw/")
-    return [booking, agoda]
+    A plain Google search has no such failure mode: it never commits to a
+    specific (possibly wrong) property page, has the highest coverage of
+    any single mechanism (works regardless of which OTA(s), if any, list
+    the property), and lets the user compare results and pick the right one
+    themselves."""
+    params = {"q": f"{real_name} {destination} 訂房"}
+    return _assert_host("google_search", "https://www.google.com/search?" + urlencode(params))
 
 
 def build_activities_link(real_name_or_keyword: str) -> DeepLink:

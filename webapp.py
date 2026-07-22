@@ -49,16 +49,12 @@ SITE_INDEX = site_index.ensure_index(LOCAL_SETTINGS)
 
 CHAT_SESSIONS: Dict[str, ChatSession] = {}
 TAIL_QUEUES: Dict[str, "queue.Queue"] = {}
+MESSAGE_QUEUES: Dict[str, "queue.Queue"] = {}
 
 
 class RunRequest(BaseModel):
-    intake_text: str = ""
     site_mode: str = "unrestricted"
     model: str = "claude-opus-4-8"
-
-
-class MessageRequest(BaseModel):
-    message: str = ""
 
 
 class SelectPlanRequest(BaseModel):
@@ -116,20 +112,44 @@ def chat_start(req: RunRequest):
         local_settings=LOCAL_SETTINGS, site_index=SITE_INDEX,
     )
     CHAT_SESSIONS[run_id] = session
-    try:
-        first_turn = session.send_message(req.intake_text)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"run_id": run_id, **first_turn}
+    return {"run_id": run_id}
 
 
-@app.post("/api/chat/{run_id}/message")
-def chat_message(run_id: str, req: MessageRequest):
-    session = _get_session(run_id)
+# -- message send (SSE), one step_started/step_completed event per real API
+# call inside this turn's chain, ending in one message_done event whose data
+# is byte-identical to what the old blocking /message endpoint used to
+# return directly. Same background-thread/queue bridge as /tail-events. -----
+def _execute_message(run_id: str, text: str) -> None:
+    session = CHAT_SESSIONS[run_id]
+    q = MESSAGE_QUEUES[run_id]
     try:
-        return session.send_message(req.message)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc))
+        for event in session.send_message_streaming(text):
+            q.put(event)
+    except Exception:
+        pass  # already surfaced as an "error" event by send_message_streaming
+    finally:
+        q.put(None)
+
+
+@app.get("/api/chat/{run_id}/message-events")
+def chat_message_events(run_id: str, text: str = ""):
+    _get_session(run_id)
+    q: "queue.Queue" = queue.Queue()
+    MESSAGE_QUEUES[run_id] = q
+    thread = threading.Thread(target=_execute_message, args=(run_id, text), daemon=True)
+    thread.start()
+
+    def gen():
+        while True:
+            event = q.get()
+            if event is None:
+                yield "event: done\ndata: {}\n\n"
+                break
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 
 @app.post("/api/chat/{run_id}/select-plan")

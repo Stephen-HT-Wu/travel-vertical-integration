@@ -10,8 +10,8 @@ case the session ends right after the plan pick. That tail, when it does
 run, stays UserSimulatorAgent-driven exactly as before.
 
 Persona is no longer collected via a structured form: the session starts
-with a placeholder Persona and PlanningAgent.generate_plan_bundle() resolves
-the real one from the user's free-text description (see
+with a placeholder Persona and PlanningAgent.generate_plan_bundle_streaming()
+resolves the real one from the user's free-text description (see
 agents/planning_agent.py's IntakeDecision), reusing the same clarification-
 round mechanism that used to handle style intent alone.
 
@@ -99,33 +99,57 @@ class ChatSession:
         transcript.append(ChatMessage(role="assistant", content=reply_message, timestamp=_now()))
 
     # -- chat turns -------------------------------------------------------
-    def send_message(self, user_message: str) -> dict:
+    def send_message_streaming(self, user_message: str) -> Iterator[dict]:
+        """Streaming counterpart of the (now removed) blocking send_message,
+        mirroring how orchestrator.run_tail_streaming wraps its own inner
+        generator: yield an 'error' event and re-raise on failure, so
+        webapp.py's background thread (which already does except: pass +
+        finally: q.put(None)) closes the SSE stream cleanly either way."""
+        try:
+            yield from self._send_message_streaming_inner(user_message)
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "stage": self.phase, "label": None, "data": {"message": str(exc)}, "timestamp": _now()}
+            raise
+
+    def _send_message_streaming_inner(self, user_message: str) -> Iterator[dict]:
         phase = self.phase
         if phase != "itinerary":
-            raise ValueError(f"send_message is not valid in phase '{phase}'")
+            raise ValueError(f"send_message_streaming is not valid in phase '{phase}'")
         history = self.history.get(phase, [])
 
         agent = self.planning_agent
         if not self.plan_ready:
-            call = lambda: agent.generate_plan_bundle(  # noqa: E731
+            sub_gen = agent.generate_plan_bundle_streaming(
                 self.persona, history, user_message, self.run_config, self.site_index,
                 self.local_settings.rag_top_n, self.clarification_rounds,
                 self.local_settings.rag_max_clarifying_questions,
             )
         else:
-            call = lambda: agent.refine_bundle(history, user_message)  # noqa: E731
+            sub_gen = agent.refine_bundle_streaming(history, user_message)
 
+        turn = new_history = resolved_persona = None
         try:
-            turn, new_history, resolved_persona = call()
+            for event in sub_gen:
+                if event["type"] == "result":
+                    turn, new_history, resolved_persona = event["value"]
+                elif event["type"] == "step_started":
+                    yield {"type": "step_started", "stage": phase, "label": event["label"], "data": {}, "timestamp": _now()}
+                elif event["type"] == "step_completed":
+                    yield {
+                        "type": "step_completed", "stage": phase, "label": event["label"],
+                        "data": {"metrics": event["metrics"]}, "timestamp": _now(),
+                    }
         finally:
-            # Record metrics for whatever API call happened, even if a
-            # downstream check rejects the result — the call still cost
-            # real tokens and should count toward the feasibility-
-            # assessment totals.
-            if agent.last_call_metrics:
-                stage_metrics = StageMetrics.from_calls(phase, agent.last_call_metrics)
-                self.trip_log.metrics.add_stage(stage_metrics)
-                self._save()
+            # Record metrics for whatever API calls happened, even if a
+            # downstream check rejects the result or an exception occurs
+            # partway through — those calls still cost real tokens and
+            # should count toward the feasibility-assessment totals. Always
+            # builds a StageMetrics (even from an empty list) rather than
+            # only when last_call_metrics is truthy, avoiding a NameError if
+            # this turn happened to make zero calls.
+            stage_metrics = StageMetrics.from_calls(phase, list(agent.last_call_metrics))
+            self.trip_log.metrics.add_stage(stage_metrics)
+            self._save()
 
         if resolved_persona is not None:
             self.persona = resolved_persona
@@ -151,13 +175,17 @@ class ChatSession:
         self._record_transcript(phase, user_message, turn.reply_message)
         self._save()
 
-        return {
-            "type": "chat_reply",
-            "phase": phase,
-            "reply_message": turn.reply_message,
-            "proposal": turn.model_dump(mode="json"),
-            "metrics": stage_metrics.model_dump(),
-            "totals": self.trip_log.metrics.model_dump(),
+        yield {
+            "type": "message_done", "stage": phase, "label": None,
+            "data": {
+                "type": "chat_reply",
+                "phase": phase,
+                "reply_message": turn.reply_message,
+                "proposal": turn.model_dump(mode="json"),
+                "metrics": stage_metrics.model_dump(),
+                "totals": self.trip_log.metrics.model_dump(),
+            },
+            "timestamp": _now(),
         }
 
     # -- plan selection ---------------------------------------------------
@@ -175,6 +203,13 @@ class ChatSession:
         bundle = self.trip_log.plan_bundle
         if bundle is None or not self.plan_ready:
             raise ValueError("尚未有完整方案可以選擇")
+        if bundle.selected_option_id is not None:
+            # Guards the "exactly one HITL entry per pick" guarantee against
+            # a double-submit (e.g. a fast double-click on "選這個方案"
+            # firing two overlapping requests) — without this, a second call
+            # would silently re-run everything below and append a second,
+            # duplicate plan_selection entry.
+            raise ValueError(f"已經選過方案 {bundle.selected_option_id} 了，無法重複選擇")
         option = next((o for o in bundle.options if o.option_id == option_id), None)
         if option is None:
             raise ValueError(f"找不到方案 {option_id}")
@@ -218,14 +253,11 @@ class ChatSession:
         if option.accommodation:
             candidate = option.accommodation[0]
             real_name = (candidate.deep_link_query or candidate.name).strip()
-            links = deep_links.build_accommodation_links(real_name, self.persona.party_size)
-            referrals = [
-                ReferralEvent(
-                    stage="accommodation", vendor=link.vendor, url=link.url, deep_link_query=real_name,
-                    candidate_id=candidate.id, candidate_name=candidate.name, referred_at=_now(),
-                )
-                for link in links
-            ]
+            link = deep_links.build_accommodation_link(real_name, self.persona.destination_location)
+            referral = ReferralEvent(
+                stage="accommodation", vendor=link.vendor, url=link.url, deep_link_query=real_name,
+                candidate_id=candidate.id, candidate_name=candidate.name, referred_at=_now(),
+            )
             self.trip_log.stages.accommodation = CandidateStageOutput(
                 candidates=option.accommodation,
                 agent_selected_candidate_id=candidate.id,
@@ -233,9 +265,9 @@ class ChatSession:
                 confirmation=CandidateConfirmation(
                     status="confirmed", final_candidate_id=candidate.id, feedback="使用者選擇了包含此方案的整體行程"
                 ),
-                referral=referrals[0], referrals=referrals,
+                referral=referral, referrals=[referral],
             )
-            stage_referrals["accommodation"] = [r.model_dump(mode="json") for r in referrals]
+            stage_referrals["accommodation"] = [referral.model_dump(mode="json")]
             summary_parts.append(f"住宿：{candidate.name}")
 
         if option.activities:
